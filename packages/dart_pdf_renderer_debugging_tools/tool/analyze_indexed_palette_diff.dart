@@ -17,12 +17,12 @@ usage:
 options:
   --pages <spec>       page numbers/ranges, for example 51,55,112 (default: 1)
   --scale <n>          pixels per PDF point (default: 1)
-  --tolerance <delta>  max channel delta for matching pure palette pixels
+  --tolerance <delta>  max channel delta for matching renderer palette pixels
                        (default: 3)
   --min-pixels <n>     hide palette entries with fewer matches (default: 50)
 
-Prints, for each Indexed DeviceCMYK image palette entry, the current pure-Dart
-fallback RGB and the average PDFium RGB at pixels where the pure render matched
+Prints, for each Indexed DeviceCMYK image palette entry, the current Dart renderer
+fallback RGB and the average PDFium RGB at pixels where the Dart renderer matched
 that palette color.
 ''';
 
@@ -45,12 +45,12 @@ Future<void> main(List<String> args) async {
 
   final pdfBytes = await File(options.pdfPath).readAsBytes();
   final cosDocument = dart_pdf.PdfDocument.open(pdfBytes, password: '');
-  final pureRenderer = PurePdfPageRenderer(cosDocument);
+  final dartRenderer = PdfPageRenderer(cosDocument);
   final pdfiumDoc = await pdfium.openFile(options.pdfPath);
   try {
     final pageCount = math.min(
       cosDocument.pageCount,
-      pureRenderer.pageSizes.length,
+      dartRenderer.pageSizes.length,
     );
     final pages = _expandPages(options.pagesSpec, pageCount);
     stdout.writeln(
@@ -62,7 +62,7 @@ Future<void> main(List<String> args) async {
       stdout.writeln('page=$pageNumber indexedDeviceCmyk=${palettes.length}');
       if (palettes.isEmpty) continue;
 
-      final pure = _renderPurePage(pureRenderer, pageNumber, options.scale);
+      final dartPage = _renderDartPage(dartRenderer, pageNumber, options.scale);
       final pdfiumPage = await _renderPdfiumPage(
         pdfiumDoc,
         pageNumber,
@@ -77,19 +77,19 @@ Future<void> main(List<String> args) async {
           );
           for (var entry = 0; entry < palette.colors.length; entry++) {
             final cmyk = palette.colors[entry];
-            final pureRgb = _defaultCmykToRgb(cmyk);
+            final dartRgb = _defaultCmykToRgb(cmyk);
             final sample = _sampleMatchingPixels(
-              pure: pure.pixels,
+              dartPixels: dartPage.pixels,
               pdfium: pdfiumPage.pixels,
-              width: pure.width,
-              height: pure.height,
-              pureRgb: pureRgb,
+              width: dartPage.width,
+              height: dartPage.height,
+              dartRgb: dartRgb,
               tolerance: options.tolerance,
             );
             if (sample.count < options.minPixels) continue;
             stdout.writeln(
               '    [$entry] cmyk=${cmyk.join(',')} '
-              'pure=${pureRgb.format()} '
+              'dart=${dartRgb.format()} '
               'pdfium=${sample.pdfiumRgb.format()} '
               'count=${sample.count} '
               'avgDelta=${sample.averageDelta.toStringAsFixed(2)}',
@@ -97,7 +97,7 @@ Future<void> main(List<String> args) async {
           }
         }
       } finally {
-        pure.dispose();
+        dartPage.dispose();
         pdfiumPage.dispose();
       }
     }
@@ -215,8 +215,8 @@ Uint8List? _lookupBytes(cos.CosDocument document, cos.CosObject object) {
   return null;
 }
 
-_RenderedPage _renderPurePage(
-  PurePdfPageRenderer renderer,
+_RenderedPage _renderDartPage(
+  PdfPageRenderer renderer,
   int pageNumber,
   double scale,
 ) {
@@ -273,17 +273,17 @@ Future<_RenderedPage> _renderPdfiumPage(
 }
 
 _PaletteSample _sampleMatchingPixels({
-  required Uint8List pure,
+  required Uint8List dartPixels,
   required Uint8List pdfium,
   required int width,
   required int height,
-  required _Rgb pureRgb,
+  required _Rgb dartRgb,
   required int tolerance,
 }) {
   var count = 0;
-  var pureR = 0;
-  var pureG = 0;
-  var pureB = 0;
+  var dartR = 0;
+  var dartG = 0;
+  var dartB = 0;
   var pdfiumR = 0;
   var pdfiumG = 0;
   var pdfiumB = 0;
@@ -291,19 +291,19 @@ _PaletteSample _sampleMatchingPixels({
   for (var y = 0; y < height; y++) {
     var offset = y * width * 4;
     for (var x = 0; x < width; x++) {
-      final b = pure[offset];
-      final g = pure[offset + 1];
-      final r = pure[offset + 2];
-      if ((r - pureRgb.r).abs() <= tolerance &&
-          (g - pureRgb.g).abs() <= tolerance &&
-          (b - pureRgb.b).abs() <= tolerance) {
+      final b = dartPixels[offset];
+      final g = dartPixels[offset + 1];
+      final r = dartPixels[offset + 2];
+      if ((r - dartRgb.r).abs() <= tolerance &&
+          (g - dartRgb.g).abs() <= tolerance &&
+          (b - dartRgb.b).abs() <= tolerance) {
         final pb = pdfium[offset];
         final pg = pdfium[offset + 1];
         final pr = pdfium[offset + 2];
         count++;
-        pureR += r;
-        pureG += g;
-        pureB += b;
+        dartR += r;
+        dartG += g;
+        dartB += b;
         pdfiumR += pr;
         pdfiumG += pg;
         pdfiumB += pb;
@@ -319,9 +319,9 @@ _PaletteSample _sampleMatchingPixels({
   return _PaletteSample(
     count,
     _Rgb(
-      (pureR / count).round(),
-      (pureG / count).round(),
-      (pureB / count).round(),
+      (dartR / count).round(),
+      (dartG / count).round(),
+      (dartB / count).round(),
     ),
     _Rgb(
       (pdfiumR / count).round(),
@@ -480,19 +480,19 @@ class _RenderedPage {
 class _PaletteSample {
   const _PaletteSample(
     this.count,
-    this.pureRgb,
+    this.dartRgb,
     this.pdfiumRgb,
     this.averageDelta,
   );
 
   const _PaletteSample.empty()
     : count = 0,
-      pureRgb = const _Rgb(0, 0, 0),
+      dartRgb = const _Rgb(0, 0, 0),
       pdfiumRgb = const _Rgb(0, 0, 0),
       averageDelta = 0;
 
   final int count;
-  final _Rgb pureRgb;
+  final _Rgb dartRgb;
   final _Rgb pdfiumRgb;
   final double averageDelta;
 }

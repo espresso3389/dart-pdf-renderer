@@ -1,7 +1,7 @@
 # pdfrx_dart_pdf
 
 `pdfrx_dart_pdf` is an experimental bridge that runs the `pdfrx` Flutter viewer
-API on top of the pure-Dart PDF implementation provided by `dart_pdf_editor`.
+API on top of the pure-Dart PDF implementation provided by `dart_pdf_renderer`.
 
 The package installs a custom `PdfrxEntryFunctions` implementation so existing
 `pdfrx` widgets can open and render PDF documents through dart-pdf rather than
@@ -13,7 +13,7 @@ the default PDFium backend.
 - Supports `PdfDocument.openData`, `openFile`, `openAsset`, `openCustom`, and
   file/HTTP(S) `openUri`.
 - Adapts dart-pdf pages to `pdfrx.PdfDocument` and `pdfrx.PdfPage`.
-- Renders pages through `dart_pdf_editor.PdfPageRenderer` and converts the
+- Renders pages through `dart_pdf_renderer.PdfPageRenderer` and converts the
   result to `pdfrx.PdfImage`.
 - Includes a Flutter example based on the upstream `pdfrx` sample viewer.
 
@@ -26,7 +26,7 @@ dependencies:
   pdfrx_dart_pdf:
     path: .
   pdfrx: ^2.4.4
-  dart_pdf_editor: ^0.1.0
+  dart_pdf_renderer: ^0.1.0
   pdf_cos: ^0.1.0
   pdf_document: ^0.1.0
 ```

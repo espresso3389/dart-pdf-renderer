@@ -91,7 +91,7 @@ Future<void> _compareMain(List<String> args) async {
 Future<void> _renderWithDartPdf(_RenderRequest request, String output) async {
   final data = await File(request.pdfPath).readAsBytes();
   final doc = dart_pdf.PdfDocument.open(data, password: '');
-  final renderer = PurePdfPageRenderer(doc);
+  final renderer = PdfPageRenderer(doc);
   if (request.pageNumber < 1 ||
       request.pageNumber > renderer.pageSizes.length) {
     throw RangeError.range(
@@ -192,7 +192,7 @@ Future<void> _writeBgraPng(
 Future<void> _printTrace(_RenderRequest request, int limit) async {
   final data = await File(request.pdfPath).readAsBytes();
   final doc = dart_pdf.PdfDocument.open(data, password: '');
-  final renderer = PurePdfPageRenderer(doc);
+  final renderer = PdfPageRenderer(doc);
   final pageSize = renderer.pageSizes[request.pageNumber - 1];
   final x = request.x1 * pageSize.width * request.scale;
   final y = request.y1 * pageSize.height * request.scale;

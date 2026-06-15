@@ -1,7 +1,3 @@
-import 'dart:async';
-import 'dart:collection';
-import 'dart:developer' as developer;
-import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -12,6 +8,7 @@ import 'package:pdf_cos/pdf_cos.dart' as cos;
 import 'package:pdf_document/pdf_document.dart';
 import 'package:pdf_graphics/pdf_graphics.dart';
 
+import 'pdf_display_command.dart';
 import 'pdfium_cmyk.dart';
 
 const _antiAliasSamplesPerAxis = 4;
@@ -21,22 +18,43 @@ const _antiAliasSampleScale = 1 / _antiAliasSampleCount;
 const _minCubicFlattenSegments = 8;
 const _midCubicFlattenSegments = 12;
 const _maxCubicFlattenSegments = 16;
+const _glyphTransformQuantization = 64;
+const _glyphSubpixelQuantization = 1;
+const _defaultMaxGlyphRasterPixels = 65536;
+const _defaultMaxGlyphRasterCacheEntries = 2048;
 
-class PurePdfPageRenderer {
-  PurePdfPageRenderer(this.document);
+/// A synchronous renderer for PDF pages backed by the pure Dart renderer.
+class PdfPageRenderer {
+  /// Creates a renderer for [document].
+  ///
+  /// Optional cache instances can be supplied to share or control cache state
+  /// across renderer instances.
+  PdfPageRenderer(
+    this.document, {
+    PdfGlyphRasterCache? glyphRasterCache,
+    PdfImageDecodeCache? imageDecodeCache,
+  }) : glyphRasterCache = glyphRasterCache ?? PdfGlyphRasterCache(),
+       imageDecodeCache = imageDecodeCache ?? PdfImageDecodeCache();
 
+  /// The PDF document rendered by this instance.
   final PdfDocument document;
   final _displayLists =
-      <({bool annotations, int pageNumber}), _PurePdfPageDisplayList>{};
-  final _glyphRasterCache = _GlyphRasterCache();
-  final _imageDecodeCache = _ImageDecodeCache();
+      <({bool annotations, int pageNumber}), _PdfPageDisplayList>{};
+
+  /// The glyph raster cache used while rendering text.
+  final PdfGlyphRasterCache glyphRasterCache;
+
+  /// The image decode cache used while rendering image XObjects.
+  final PdfImageDecodeCache imageDecodeCache;
   late final _ImageColorContext _documentImageColorContext =
       _ImageColorContext.fromDocument(document.cos);
 
+  /// The page sizes in display coordinate order.
   List<PdfPageSize> get pageSizes => List.unmodifiable([
     for (var i = 0; i < document.pageCount; i++) _pageSize(document.page(i)),
   ]);
 
+  /// Renders a page region to BGRA pixels.
   Uint8List renderBgraRegion({
     required int pageNumber,
     required double x,
@@ -68,6 +86,7 @@ class PurePdfPageRenderer {
     return bgra;
   }
 
+  /// Renders a page region to RGBA pixels.
   Uint8List renderRgbaRegion({
     required int pageNumber,
     required double x,
@@ -91,14 +110,14 @@ class PurePdfPageRenderer {
       height: height,
       pixelRatio: pixelRatio,
       backgroundColor: backgroundColor,
-      glyphRasterCache: _glyphRasterCache,
-      imageDecodeCache: _imageDecodeCache,
+      glyphRasterCache: glyphRasterCache,
+      imageDecodeCache: imageDecodeCache,
       trace: trace,
       timing: timing,
     );
   }
 
-  _PurePdfPageDisplayList _displayListFor(
+  _PdfPageDisplayList _displayListFor(
     int pageNumber,
     PdfPage page,
     bool annotations, {
@@ -133,7 +152,7 @@ class PurePdfPageRenderer {
         : PdfPageSize(box.width, box.height);
   }
 
-  static _PurePdfPageDisplayList _buildDisplayList(
+  static _PdfPageDisplayList _buildDisplayList(
     PdfPage page, {
     required bool annotations,
     required _ImageColorContext documentImageColorContext,
@@ -151,11 +170,11 @@ class PurePdfPageRenderer {
     final interpreter = PdfInterpreter(cos: page.document.cos, device: device)
       ..drawPage(page);
     if (annotations) interpreter.drawAnnotations(page);
-    return _PurePdfPageDisplayList(List.unmodifiable(device.commands));
+    return _PdfPageDisplayList(List.unmodifiable(device.commands));
   }
 
   static Uint8List _renderRgbaDisplayList(
-    _PurePdfPageDisplayList displayList, {
+    _PdfPageDisplayList displayList, {
     required cos.CosDocument cosDocument,
     required double x,
     required double y,
@@ -163,8 +182,8 @@ class PurePdfPageRenderer {
     required int height,
     required double pixelRatio,
     required int backgroundColor,
-    required _GlyphRasterCache glyphRasterCache,
-    required _ImageDecodeCache imageDecodeCache,
+    required PdfGlyphRasterCache glyphRasterCache,
+    required PdfImageDecodeCache imageDecodeCache,
     PdfRenderTrace? trace,
     PdfRenderTiming? timing,
   }) {
@@ -188,7 +207,7 @@ class PurePdfPageRenderer {
     ).concat(PdfMatrix.scaled(pixelRatio, pixelRatio));
     final replayStopwatch = timing == null ? null : (Stopwatch()..start());
     displayList.replay(
-      _DirectPdfDevice(
+      PdfDirectPdfDevice._(
         surface,
         cosDocument: cosDocument,
         transform: transform,
@@ -197,7 +216,7 @@ class PurePdfPageRenderer {
         trace: trace,
         timing: timing,
       ),
-      _RectD(
+      PdfDisplayRect(
         viewX,
         viewY,
         viewX + width / pixelRatio,
@@ -234,219 +253,12 @@ class PurePdfPageRenderer {
   }
 }
 
-class PurePdfPageAsyncRenderer {
-  PurePdfPageAsyncRenderer._(this._isolate, this._sendPort, this.pageSizes);
+class _PdfPageDisplayList {
+  const _PdfPageDisplayList(this.commands);
 
-  final Isolate _isolate;
-  final SendPort _sendPort;
-  final List<PdfPageSize> pageSizes;
-  var _nextCancellationTokenId = 0;
-  bool _disposed = false;
+  final List<PdfDisplayCommand> commands;
 
-  static Future<PurePdfPageAsyncRenderer> create(
-    Uint8List documentBytes, {
-    String password = '',
-  }) async {
-    final readyPort = ReceivePort();
-    final isolate = await Isolate.spawn(
-      _workerMain,
-      _PurePdfRendererWorkerInit(
-        readyPort.sendPort,
-        TransferableTypedData.fromList([documentBytes]),
-        password,
-      ),
-    );
-
-    final ready = await readyPort.first;
-    readyPort.close();
-    if (ready is _PurePdfRendererWorkerReady) {
-      final renderer = PurePdfPageAsyncRenderer._(
-        isolate,
-        ready.sendPort,
-        ready.pageSizes,
-      );
-      return renderer;
-    }
-    isolate.kill(priority: Isolate.immediate);
-    if (ready is _PurePdfRendererWorkerError) {
-      throw StateError('${ready.error}\n${ready.stackTrace}');
-    }
-    throw StateError('Unexpected renderer worker initialization response.');
-  }
-
-  PurePdfRenderCancellationToken createCancellationToken() =>
-      PurePdfRenderCancellationToken._(_sendPort, _nextCancellationTokenId++);
-
-  Future<Uint8List?> renderBgraRegion({
-    required int pageNumber,
-    required double x,
-    required double y,
-    required int width,
-    required int height,
-    required double pixelRatio,
-    required int backgroundColor,
-    required bool annotations,
-    PurePdfRenderCancellationToken? cancellationToken,
-  }) async {
-    if (_disposed) {
-      throw StateError('PurePdfPageAsyncRenderer is disposed.');
-    }
-    if (cancellationToken?.isCancelled ?? false) return null;
-    final data =
-        await _compute<_PurePdfRendererRenderParams, TransferableTypedData>(
-          (renderer, params) {
-            final bgra = _debugTimeSync(
-              'renderBgraRegion '
-              'page=${params.pageNumber} '
-              'region=${params.x.toStringAsFixed(1)},'
-              '${params.y.toStringAsFixed(1)} '
-              '${params.width}x${params.height} '
-              'pixelRatio=${params.pixelRatio.toStringAsFixed(3)}',
-              () => renderer.renderBgraRegion(
-                pageNumber: params.pageNumber,
-                x: params.x,
-                y: params.y,
-                width: params.width,
-                height: params.height,
-                pixelRatio: params.pixelRatio,
-                backgroundColor: params.backgroundColor,
-                annotations: params.annotations,
-              ),
-            );
-            return TransferableTypedData.fromList([bgra]);
-          },
-          (
-            pageNumber: pageNumber,
-            x: x,
-            y: y,
-            width: width,
-            height: height,
-            pixelRatio: pixelRatio,
-            backgroundColor: backgroundColor,
-            annotations: annotations,
-          ),
-          cancellationToken: cancellationToken,
-        );
-    return data?.materialize().asUint8List();
-  }
-
-  Future<R?> _compute<M, R>(
-    _PurePdfRendererComputeCallback<M, R> callback,
-    M message, {
-    PurePdfRenderCancellationToken? cancellationToken,
-  }) async {
-    if (_disposed) {
-      throw StateError('PurePdfPageAsyncRenderer is disposed.');
-    }
-    if (cancellationToken?.isCancelled ?? false) return null;
-
-    final receivePort = ReceivePort();
-    try {
-      _sendPort.send(
-        _PurePdfRendererComputeParams<M, R>(
-          receivePort.sendPort,
-          callback,
-          message,
-          cancellationTokenId: cancellationToken?._id,
-        ),
-      );
-      cancellationToken?._markRequestSent();
-      final response = await receivePort.first;
-      if (response is _PurePdfRendererCallCanceled) return null;
-      if (response is _PurePdfRendererCallError) {
-        throw StateError('${response.error}\n${response.stackTrace}');
-      }
-      return response as R;
-    } finally {
-      receivePort.close();
-    }
-  }
-
-  Future<void> dispose() async {
-    if (_disposed) return;
-    _disposed = true;
-    final receivePort = ReceivePort();
-    try {
-      _sendPort.send(_PurePdfRendererStopRequest(receivePort.sendPort));
-      final response = await receivePort.first;
-      if (response is _PurePdfRendererCallError) {
-        throw StateError('${response.error}\n${response.stackTrace}');
-      }
-    } finally {
-      receivePort.close();
-      _isolate.kill(priority: Isolate.beforeNextEvent);
-    }
-  }
-
-  static void _workerMain(_PurePdfRendererWorkerInit init) {
-    final commandPort = ReceivePort();
-    try {
-      final bytes = init.documentBytes.materialize().asUint8List();
-      final document = PdfDocument.open(bytes, password: init.password);
-      final renderer = PurePdfPageRenderer(document);
-      final state = _PurePdfRendererWorkerState(commandPort, renderer);
-      final queue = Queue<_PurePdfRendererWorkerMessage>();
-      var scheduled = false;
-
-      void scheduleNext() {
-        if (scheduled || state.stopped) return;
-        scheduled = true;
-        Timer.run(() {
-          scheduled = false;
-          if (state.stopped || queue.isEmpty) return;
-          queue.removeFirst().execute(state);
-          if (!state.stopped && queue.isNotEmpty) scheduleNext();
-        });
-      }
-
-      init.readyPort.send(
-        _PurePdfRendererWorkerReady(commandPort.sendPort, renderer.pageSizes),
-      );
-      commandPort.listen((message) {
-        if (message is int) {
-          queue.removeWhere((call) => call.cancelIfQueued(message));
-          return;
-        }
-        if (state.stopped) return;
-        if (message is! _PurePdfRendererWorkerMessage) return;
-        queue.add(message);
-        scheduleNext();
-      });
-    } catch (error, stackTrace) {
-      commandPort.close();
-      init.readyPort.send(
-        _PurePdfRendererWorkerError(error.toString(), stackTrace.toString()),
-      );
-    }
-  }
-}
-
-T _debugTimeSync<T>(String label, T Function() action) {
-  Stopwatch? stopwatch;
-  assert(() {
-    stopwatch = Stopwatch()..start();
-    return true;
-  }());
-  try {
-    return action();
-  } finally {
-    assert(() {
-      stopwatch!.stop();
-      developer.log(
-        '$label took ${stopwatch!.elapsedMilliseconds} ms',
-        name: 'dart_pdf_renderer.render',
-      );
-      return true;
-    }());
-  }
-}
-
-class _PurePdfPageDisplayList {
-  const _PurePdfPageDisplayList(this.commands);
-
-  final List<_DisplayCommand> commands;
-
-  void replay(_DirectPdfDevice device, _RectD visibleBounds) {
+  void replay(PdfDirectPdfDevice device, PdfDisplayRect visibleBounds) {
     for (final command in commands) {
       if (command.shouldReplay(visibleBounds)) {
         final stopwatch = device.timing == null ? null : (Stopwatch()..start());
@@ -582,23 +394,23 @@ class _RecordingPdfDevice implements PdfDevice {
   final PdfMatrix transform;
   final Map<cos.CosStream, _ImageColorContext> imageColorContexts;
   final _ImageColorContext documentImageColorContext;
-  final commands = <_DisplayCommand>[];
+  final commands = <PdfDisplayCommand>[];
 
   @override
   void save() {
-    commands.add(const _SaveCommand());
+    commands.add(const PdfSaveCommand());
   }
 
   @override
   void restore() {
-    commands.add(const _RestoreCommand());
+    commands.add(const PdfRestoreCommand());
   }
 
   @override
   void fillPath(PdfPath path, PdfColor color, PdfFillRule rule, double alpha) {
     final transformed = _transformPath(path, transform);
     commands.add(
-      _FillPathCommand(
+      PdfFillPathCommand(
         transformed,
         color,
         rule,
@@ -617,7 +429,7 @@ class _RecordingPdfDevice implements PdfDevice {
   ) {
     final transformed = _transformPath(path, transform);
     commands.add(
-      _FillPathGradientCommand(
+      PdfFillPathGradientCommand(
         transformed,
         rule,
         gradient,
@@ -631,7 +443,7 @@ class _RecordingPdfDevice implements PdfDevice {
   void fillMesh(PdfMesh mesh, double alpha) {
     final transformed = _transformMesh(mesh, transform);
     commands.add(
-      _FillMeshCommand(transformed, alpha, _meshBounds(transformed)),
+      PdfFillMeshCommand(transformed, alpha, _meshBounds(transformed)),
     );
   }
 
@@ -645,7 +457,7 @@ class _RecordingPdfDevice implements PdfDevice {
     final transformed = _transformPath(path, transform);
     final bounds = _pathBounds(transformed)?.inflate(stroke.width / 2 + 1);
     commands.add(
-      _StrokePathCommand(
+      PdfStrokePathCommand(
         transformed,
         color,
         stroke.copyWith(width: stroke.width * transform.scaleFactor),
@@ -657,18 +469,18 @@ class _RecordingPdfDevice implements PdfDevice {
 
   @override
   void clipPath(PdfPath path, PdfFillRule rule) {
-    commands.add(_ClipPathCommand(_transformPath(path, transform), rule));
+    commands.add(PdfClipPathCommand(_transformPath(path, transform), rule));
   }
 
   @override
   void drawText(PdfTextRun run) {
     final transformed = _transformTextRun(run, transform);
     if (run.invisible) {
-      commands.add(_DrawTextCommand(transformed, null));
+      commands.add(PdfDrawTextCommand(transformed, null));
       return;
     }
     commands.add(
-      _DrawTextCommand(transformed, _textRunBounds(transformed)?.inflate(2)),
+      PdfDrawTextCommand(transformed, _textRunBounds(transformed)?.inflate(2)),
     );
   }
 
@@ -682,23 +494,26 @@ class _RecordingPdfDevice implements PdfDevice {
       transform,
     );
     commands.add(
-      _DrawImageCommand(transformed, _imageRequestBounds(transformed.request)),
+      PdfDrawImageCommand(
+        transformed,
+        _imageRequestBounds(transformed.request),
+      ),
     );
   }
 
   @override
   void setBlendMode(PdfBlendMode mode) {
-    commands.add(_SetBlendModeCommand(mode));
+    commands.add(PdfSetBlendModeCommand(mode));
   }
 
   @override
   void beginGroup(double alpha) {
-    commands.add(_BeginGroupCommand(alpha));
+    commands.add(PdfBeginGroupCommand(alpha));
   }
 
   @override
   void endGroup() {
-    commands.add(const _EndGroupCommand());
+    commands.add(const PdfEndGroupCommand());
   }
 
   @override
@@ -714,161 +529,31 @@ class _RecordingPdfDevice implements PdfDevice {
   }
 }
 
-abstract class _DisplayCommand {
-  const _DisplayCommand([this.bounds]);
+/// Cache for rasterized glyph masks.
+class PdfGlyphRasterCache {
+  /// Creates a glyph raster cache.
+  PdfGlyphRasterCache({
+    this.maxEntries = _defaultMaxGlyphRasterCacheEntries,
+    this.maxGlyphPixels = _defaultMaxGlyphRasterPixels,
+  });
 
-  final _RectD? bounds;
+  /// The maximum number of glyph masks retained.
+  final int maxEntries;
 
-  bool shouldReplay(_RectD visibleBounds) =>
-      bounds == null || bounds!.intersects(visibleBounds);
-
-  void replay(_DirectPdfDevice device);
-}
-
-class _SaveCommand extends _DisplayCommand {
-  const _SaveCommand();
-
-  @override
-  void replay(_DirectPdfDevice device) => device.save();
-}
-
-class _RestoreCommand extends _DisplayCommand {
-  const _RestoreCommand();
-
-  @override
-  void replay(_DirectPdfDevice device) => device.restore();
-}
-
-class _FillPathCommand extends _DisplayCommand {
-  const _FillPathCommand(
-    this.path,
-    this.color,
-    this.rule,
-    this.alpha,
-    super.bounds,
-  );
-
-  final PdfPath path;
-  final PdfColor color;
-  final PdfFillRule rule;
-  final double alpha;
-
-  @override
-  void replay(_DirectPdfDevice device) =>
-      device.fillPath(path, color, rule, alpha);
-}
-
-class _FillPathGradientCommand extends _DisplayCommand {
-  const _FillPathGradientCommand(
-    this.path,
-    this.rule,
-    this.gradient,
-    this.alpha,
-    super.bounds,
-  );
-
-  final PdfPath path;
-  final PdfFillRule rule;
-  final PdfGradient gradient;
-  final double alpha;
-
-  @override
-  void replay(_DirectPdfDevice device) =>
-      device.fillPathGradient(path, rule, gradient, alpha);
-}
-
-class _FillMeshCommand extends _DisplayCommand {
-  const _FillMeshCommand(this.mesh, this.alpha, super.bounds);
-
-  final PdfMesh mesh;
-  final double alpha;
-
-  @override
-  void replay(_DirectPdfDevice device) => device.fillMesh(mesh, alpha);
-}
-
-class _StrokePathCommand extends _DisplayCommand {
-  const _StrokePathCommand(
-    this.path,
-    this.color,
-    this.stroke,
-    this.alpha,
-    super.bounds,
-  );
-
-  final PdfPath path;
-  final PdfColor color;
-  final PdfStroke stroke;
-  final double alpha;
-
-  @override
-  void replay(_DirectPdfDevice device) =>
-      device.strokePath(path, color, stroke, alpha);
-}
-
-class _ClipPathCommand extends _DisplayCommand {
-  const _ClipPathCommand(this.path, this.rule);
-
-  final PdfPath path;
-  final PdfFillRule rule;
-
-  @override
-  void replay(_DirectPdfDevice device) => device.clipPath(path, rule);
-}
-
-class _DrawTextCommand extends _DisplayCommand {
-  const _DrawTextCommand(this.run, super.bounds);
-
-  final PdfTextRun run;
-
-  @override
-  void replay(_DirectPdfDevice device) => device.drawText(run);
-}
-
-class _DrawImageCommand extends _DisplayCommand {
-  const _DrawImageCommand(this.request, super.bounds);
-
-  final _ImageDrawRequest request;
-
-  @override
-  void replay(_DirectPdfDevice device) => device.drawImageRequest(request);
-}
-
-class _SetBlendModeCommand extends _DisplayCommand {
-  const _SetBlendModeCommand(this.mode);
-
-  final PdfBlendMode mode;
-
-  @override
-  void replay(_DirectPdfDevice device) => device.setBlendMode(mode);
-}
-
-class _BeginGroupCommand extends _DisplayCommand {
-  const _BeginGroupCommand(this.alpha);
-
-  final double alpha;
-
-  @override
-  void replay(_DirectPdfDevice device) => device.beginGroup(alpha);
-}
-
-class _EndGroupCommand extends _DisplayCommand {
-  const _EndGroupCommand();
-
-  @override
-  void replay(_DirectPdfDevice device) => device.endGroup();
-}
-
-const _glyphTransformQuantization = 64;
-const _glyphSubpixelQuantization = 1;
-const _maxGlyphRasterPixels = 65536;
-const _maxGlyphRasterCacheEntries = 2048;
-
-class _GlyphRasterCache {
+  /// The maximum pixel area allowed for a single glyph mask.
+  final int maxGlyphPixels;
   final _entries = <_GlyphRasterKey, _GlyphRasterMask>{};
   final _outlineKeys = Expando<_GlyphOutlineKey>();
 
-  bool paintGlyph({
+  /// The current number of cached glyph masks.
+  int get entryCount => _entries.length;
+
+  /// Removes all cached glyph masks.
+  void clear() {
+    _entries.clear();
+  }
+
+  bool _paintGlyph({
     required _RgbaSurface surface,
     required _ClipState clip,
     required PdfPath outline,
@@ -902,7 +587,7 @@ class _GlyphRasterCache {
       timing?.glyphMasksCreated++;
     }
     _entries[key] = mask;
-    if (_entries.length > _maxGlyphRasterCacheEntries) {
+    if (_entries.length > maxEntries) {
       _entries.remove(_entries.keys.first);
     }
     final paintStopwatch = timing == null ? null : (Stopwatch()..start());
@@ -930,7 +615,7 @@ class _GlyphRasterCache {
     if (bounds == null || bounds.isEmpty) {
       return const _GlyphRasterMask.empty();
     }
-    if (bounds.width * bounds.height > _maxGlyphRasterPixels) return null;
+    if (bounds.width * bounds.height > maxGlyphPixels) return null;
 
     final coverage = _buildPathCoverageAlpha(
       bounds,
@@ -1351,7 +1036,7 @@ PdfMesh _transformMesh(PdfMesh mesh, PdfMatrix transform) => PdfMesh([
     ),
 ], mesh.triangles);
 
-_RectD? _pathBounds(PdfPath path) {
+PdfDisplayRect? _pathBounds(PdfPath path) {
   final points = <_Point>[];
   for (final segment in path.segments) {
     switch (segment) {
@@ -1368,7 +1053,7 @@ _RectD? _pathBounds(PdfPath path) {
   return _pointsBounds(points);
 }
 
-_RectD? _textRunBounds(PdfTextRun run) {
+PdfDisplayRect? _textRunBounds(PdfTextRun run) {
   final matrix = run.transform;
   return _pointsBounds([
     _Point(matrix.transformX(0, -0.25), matrix.transformY(0, -0.25)),
@@ -1381,7 +1066,7 @@ _RectD? _textRunBounds(PdfTextRun run) {
   ]);
 }
 
-_RectD? _imageRequestBounds(PdfImageRequest request) => _pointsBounds([
+PdfDisplayRect? _imageRequestBounds(PdfImageRequest request) => _pointsBounds([
   _Point(
     request.transform.transformX(0, 0),
     request.transform.transformY(0, 0),
@@ -1400,11 +1085,11 @@ _RectD? _imageRequestBounds(PdfImageRequest request) => _pointsBounds([
   ),
 ]);
 
-_RectD? _meshBounds(PdfMesh mesh) => _pointsBounds([
+PdfDisplayRect? _meshBounds(PdfMesh mesh) => _pointsBounds([
   for (final vertex in mesh.vertices) _Point(vertex.x, vertex.y),
 ]);
 
-_RectD? _pointsBounds(List<_Point> points) {
+PdfDisplayRect? _pointsBounds(List<_Point> points) {
   if (points.isEmpty) return null;
   var left = double.infinity;
   var top = double.infinity;
@@ -1416,7 +1101,7 @@ _RectD? _pointsBounds(List<_Point> points) {
     right = math.max(right, point.x);
     bottom = math.max(bottom, point.y);
   }
-  return _RectD(left, top, right, bottom);
+  return PdfDisplayRect(left, top, right, bottom);
 }
 
 _IntRect? _rawBoundsOf(List<List<_Point>> contours) {
@@ -1436,10 +1121,15 @@ _IntRect? _rawBoundsOf(List<List<_Point>> contours) {
   return _IntRect(left.floor(), top.floor(), right.ceil(), bottom.ceil());
 }
 
+/// The visible size of a PDF page after page rotation is applied.
 class PdfPageSize {
+  /// Creates a page size.
   const PdfPageSize(this.width, this.height);
 
+  /// The page width in PDF points.
   final double width;
+
+  /// The page height in PDF points.
   final double height;
 }
 
@@ -1470,173 +1160,69 @@ Uint8List _rgbaToBgra(
   return out;
 }
 
-class _PurePdfRendererWorkerInit {
-  const _PurePdfRendererWorkerInit(
-    this.readyPort,
-    this.documentBytes,
-    this.password,
-  );
-
-  final SendPort readyPort;
-  final TransferableTypedData documentBytes;
-  final String password;
-}
-
-class _PurePdfRendererWorkerReady {
-  const _PurePdfRendererWorkerReady(this.sendPort, this.pageSizes);
-
-  final SendPort sendPort;
-  final List<PdfPageSize> pageSizes;
-}
-
-class _PurePdfRendererWorkerError {
-  const _PurePdfRendererWorkerError(this.error, this.stackTrace);
-
-  final String error;
-  final String stackTrace;
-}
-
-class _PurePdfRendererWorkerState {
-  _PurePdfRendererWorkerState(this.receivePort, this.renderer);
-
-  final ReceivePort receivePort;
-  final PurePdfPageRenderer renderer;
-  var stopped = false;
-
-  void stop() {
-    stopped = true;
-    receivePort.close();
-  }
-}
-
-class PurePdfRenderCancellationToken {
-  PurePdfRenderCancellationToken._(this._sendPort, this._id);
-
-  final SendPort _sendPort;
-  final _PurePdfRendererCancellationTokenId _id;
-  var _isCancelled = false;
-  var _requestSent = false;
-  var _cancellationSent = false;
-
-  bool get isCancelled => _isCancelled;
-
-  void cancel() {
-    if (_isCancelled) return;
-    _isCancelled = true;
-    _sendCancellationIfReady();
-  }
-
-  void _markRequestSent() {
-    _requestSent = true;
-    _sendCancellationIfReady();
-  }
-
-  void _sendCancellationIfReady() {
-    if (!_isCancelled || !_requestSent || _cancellationSent) return;
-    _cancellationSent = true;
-    _sendPort.send(_id);
-  }
-}
-
-typedef _PurePdfRendererComputeCallback<M, R> =
-    R Function(PurePdfPageRenderer renderer, M message);
-
-typedef _PurePdfRendererCancellationTokenId = int;
-
-typedef _PurePdfRendererRenderParams = ({
-  bool annotations,
-  int backgroundColor,
-  int height,
-  int pageNumber,
-  double pixelRatio,
-  int width,
-  double x,
-  double y,
-});
-
-abstract class _PurePdfRendererWorkerMessage<R> {
-  _PurePdfRendererWorkerMessage(this.sendPort, {this.cancellationTokenId});
-
-  final SendPort sendPort;
-  final _PurePdfRendererCancellationTokenId? cancellationTokenId;
-
-  R run(_PurePdfRendererWorkerState state);
-
-  void execute(_PurePdfRendererWorkerState state) {
-    try {
-      sendPort.send(run(state));
-    } catch (error, stackTrace) {
-      sendPort.send(
-        _PurePdfRendererCallError(error.toString(), stackTrace.toString()),
-      );
-    }
-  }
-
-  bool cancelIfQueued(_PurePdfRendererCancellationTokenId token) {
-    if (cancellationTokenId != token) return false;
-    sendPort.send(const _PurePdfRendererCallCanceled());
-    return true;
-  }
-}
-
-class _PurePdfRendererComputeParams<M, R>
-    extends _PurePdfRendererWorkerMessage<R> {
-  _PurePdfRendererComputeParams(
-    super.sendPort,
-    this.callback,
-    this.message, {
-    super.cancellationTokenId,
-  });
-
-  final _PurePdfRendererComputeCallback<M, R> callback;
-  final M message;
-
-  @override
-  R run(_PurePdfRendererWorkerState state) => callback(state.renderer, message);
-}
-
-class _PurePdfRendererStopRequest extends _PurePdfRendererWorkerMessage<void> {
-  _PurePdfRendererStopRequest(super.sendPort);
-
-  @override
-  void run(_PurePdfRendererWorkerState state) {
-    state.stop();
-  }
-}
-
-class _PurePdfRendererCallError {
-  const _PurePdfRendererCallError(this.error, this.stackTrace);
-
-  final String error;
-  final String stackTrace;
-}
-
-class _PurePdfRendererCallCanceled {
-  const _PurePdfRendererCallCanceled();
-}
-
+/// Timing and counter data collected during rendering.
 class PdfRenderTiming {
+  /// Whether the display list came from the page cache.
   var displayListCacheHit = false;
+
+  /// Time spent building the display list, in microseconds.
   var displayListBuildMicroseconds = 0;
+
+  /// Time spent clearing the output surface, in microseconds.
   var surfaceClearMicroseconds = 0;
+
+  /// Time spent replaying display commands, in microseconds.
   var replayMicroseconds = 0;
+
+  /// Time spent converting RGBA pixels to BGRA, in microseconds.
   var bgraConversionMicroseconds = 0;
+
+  /// Number of display commands replayed.
   var replayedCommands = 0;
+
+  /// Number of display commands skipped by visible-bounds culling.
   var culledCommands = 0;
+
+  /// Time spent filling paths, in microseconds.
   var fillPathMicroseconds = 0;
+
+  /// Time spent stroking paths, in microseconds.
   var strokePathMicroseconds = 0;
+
+  /// Time spent applying clipping paths, in microseconds.
   var clipPathMicroseconds = 0;
+
+  /// Time spent drawing text, in microseconds.
   var drawTextMicroseconds = 0;
+
+  /// Time spent drawing images, in microseconds.
   var drawImageMicroseconds = 0;
+
+  /// Time spent processing transparency groups, in microseconds.
   var groupMicroseconds = 0;
+
+  /// Time spent in commands not covered by another bucket.
   var otherCommandMicroseconds = 0;
+
+  /// Number of glyph mask lookups requested.
   var glyphRequests = 0;
+
+  /// Number of glyph mask cache hits.
   var glyphCacheHits = 0;
+
+  /// Number of glyph masks created.
   var glyphMasksCreated = 0;
+
+  /// Number of glyphs rendered through the fallback path.
   var glyphFallbacks = 0;
+
+  /// Time spent creating glyph masks, in microseconds.
   var glyphMaskCreateMicroseconds = 0;
+
+  /// Time spent painting glyph masks, in microseconds.
   var glyphMaskPaintMicroseconds = 0;
 
+  /// Resets all counters to their initial values.
   void reset() {
     displayListCacheHit = false;
     displayListBuildMicroseconds = 0;
@@ -1660,22 +1246,22 @@ class PdfRenderTiming {
     glyphMaskPaintMicroseconds = 0;
   }
 
-  void _addCommandTime(_DisplayCommand command, int microseconds) {
+  void _addCommandTime(PdfDisplayCommand command, int microseconds) {
     replayedCommands++;
     switch (command) {
-      case _FillPathCommand() ||
-          _FillPathGradientCommand() ||
-          _FillMeshCommand():
+      case PdfFillPathCommand() ||
+          PdfFillPathGradientCommand() ||
+          PdfFillMeshCommand():
         fillPathMicroseconds += microseconds;
-      case _StrokePathCommand():
+      case PdfStrokePathCommand():
         strokePathMicroseconds += microseconds;
-      case _ClipPathCommand():
+      case PdfClipPathCommand():
         clipPathMicroseconds += microseconds;
-      case _DrawTextCommand():
+      case PdfDrawTextCommand():
         drawTextMicroseconds += microseconds;
-      case _DrawImageCommand():
+      case PdfDrawImageCommand():
         drawImageMicroseconds += microseconds;
-      case _BeginGroupCommand() || _EndGroupCommand():
+      case PdfBeginGroupCommand() || PdfEndGroupCommand():
         groupMicroseconds += microseconds;
       default:
         otherCommandMicroseconds += microseconds;
@@ -1683,12 +1269,18 @@ class PdfRenderTiming {
   }
 }
 
+/// Collects render trace events that intersect a region.
 class PdfRenderTrace {
+  /// Creates a trace collector for [region].
   PdfRenderTrace({required this.region});
 
+  /// The region of interest for collected trace events.
   final PdfRenderTraceRegion region;
+
+  /// The collected trace events.
   final events = <PdfRenderTraceEvent>[];
 
+  /// Adds a trace event when [bounds] intersects [region].
   void add(String operation, PdfRenderTraceRegion bounds, {String? details}) {
     if (!bounds.intersects(region)) return;
     events.add(
@@ -1702,16 +1294,27 @@ class PdfRenderTrace {
   }
 }
 
+/// A rectangular region used for render tracing.
 class PdfRenderTraceRegion {
+  /// Creates a trace region from its edges.
   const PdfRenderTraceRegion(this.left, this.top, this.right, this.bottom);
 
+  /// The left edge.
   final double left;
+
+  /// The top edge.
   final double top;
+
+  /// The right edge.
   final double right;
+
+  /// The bottom edge.
   final double bottom;
 
+  /// Whether the region has no positive area.
   bool get isEmpty => left >= right || top >= bottom;
 
+  /// Returns whether this region intersects [other].
   bool intersects(PdfRenderTraceRegion other) =>
       !isEmpty &&
       !other.isEmpty &&
@@ -1726,7 +1329,9 @@ class PdfRenderTraceRegion {
       '${right.toStringAsFixed(1)},${bottom.toStringAsFixed(1)}';
 }
 
+/// A single render trace event.
 class PdfRenderTraceEvent {
+  /// Creates a render trace event.
   const PdfRenderTraceEvent({
     required this.index,
     required this.operation,
@@ -1734,9 +1339,16 @@ class PdfRenderTraceEvent {
     this.details,
   });
 
+  /// The one-based sequence number of the event.
   final int index;
+
+  /// The traced operation name.
   final String operation;
+
+  /// The affected bounds of the operation.
   final PdfRenderTraceRegion bounds;
+
+  /// Optional operation-specific details.
   final String? details;
 
   @override
@@ -1746,8 +1358,9 @@ class PdfRenderTraceEvent {
   }
 }
 
-class _DirectPdfDevice implements PdfDevice {
-  _DirectPdfDevice(
+/// A direct rendering device used to replay display commands to pixels.
+class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
+  PdfDirectPdfDevice._(
     _RgbaSurface surface, {
     required this.cosDocument,
     required PdfMatrix transform,
@@ -1760,16 +1373,26 @@ class _DirectPdfDevice implements PdfDevice {
        _clipStack = [_ClipState(_IntRect(0, 0, surface.width, surface.height))];
 
   final List<_RgbaSurface> _surfaceStack;
+
+  /// The COS document used to resolve and decode page resources.
   final cos.CosDocument cosDocument;
-  final _GlyphRasterCache? glyphRasterCache;
-  final _ImageDecodeCache? imageDecodeCache;
+
+  /// The glyph raster cache used while drawing text.
+  final PdfGlyphRasterCache? glyphRasterCache;
+
+  /// The image decode cache used while drawing images.
+  final PdfImageDecodeCache? imageDecodeCache;
+
+  /// Optional trace collector for rendered operations.
   final PdfRenderTrace? trace;
+
+  /// Optional timing collector for rendered operations.
   final PdfRenderTiming? timing;
   final List<PdfMatrix> _transformStack;
   final List<_ClipState> _clipStack;
   final List<double> _groupAlphaStack = [];
 
-  _RgbaSurface get surface => _surfaceStack.last;
+  _RgbaSurface get _surface => _surfaceStack.last;
   PdfMatrix get _transform => _transformStack.last;
   _ClipState get _clip => _clipStack.last;
 
@@ -1918,8 +1541,8 @@ class _DirectPdfDevice implements PdfDevice {
         glyph.offset,
         0,
       ).concat(glyphTransform);
-      if (glyphRasterCache?.paintGlyph(
-            surface: surface,
+      if (glyphRasterCache?._paintGlyph(
+            surface: _surface,
             clip: _clip,
             outline: outline,
             transform: shifted,
@@ -1948,7 +1571,9 @@ class _DirectPdfDevice implements PdfDevice {
     drawImageRequest(_ImageDrawRequest(request, _ImageColorContext.device));
   }
 
-  void drawImageRequest(_ImageDrawRequest drawRequest) {
+  @override
+  void drawImageRequest(Object drawRequest) {
+    drawRequest as _ImageDrawRequest;
     final request = drawRequest.request;
     final decoded = _decodeImage(drawRequest);
     if (decoded == null) return;
@@ -1978,8 +1603,8 @@ class _DirectPdfDevice implements PdfDevice {
       return;
     }
 
-    final dstPixels = surface.pixels;
-    final dstWidth = surface.width;
+    final dstPixels = _surface.pixels;
+    final dstWidth = _surface.width;
     final srcPixels = decoded.rgba;
     final srcWidth = decoded.width;
     final srcHeight = decoded.height;
@@ -2041,8 +1666,8 @@ class _DirectPdfDevice implements PdfDevice {
     PdfMatrix inverse,
     _DecodedImage decoded,
   ) {
-    final dstPixels = surface.pixels;
-    final dstWidth = surface.width;
+    final dstPixels = _surface.pixels;
+    final dstWidth = _surface.width;
     final srcPixels = decoded.rgba;
     final srcWidth = decoded.width;
     final srcHeight = decoded.height;
@@ -2127,7 +1752,7 @@ class _DirectPdfDevice implements PdfDevice {
   void beginGroup(double alpha) {
     _trace('beginGroup', _clip.bounds, 'alpha=${_f(alpha)}');
     _groupAlphaStack.add(alpha.clamp(0, 1));
-    _surfaceStack.add(_RgbaSurface(surface.width, surface.height));
+    _surfaceStack.add(_RgbaSurface(_surface.width, _surface.height));
   }
 
   @override
@@ -2138,7 +1763,7 @@ class _DirectPdfDevice implements PdfDevice {
         ? 1.0
         : _groupAlphaStack.removeLast();
     _trace('endGroup', _clip.bounds, 'alpha=${_f(alpha)}');
-    final parent = surface;
+    final parent = _surface;
     for (var y = 0; y < layer.height; y++) {
       for (var x = 0; x < layer.width; x++) {
         final offset = (y * layer.width + x) * 4;
@@ -2220,8 +1845,8 @@ class _DirectPdfDevice implements PdfDevice {
     final b = (color.blue.clamp(0, 1) * 255).round();
     final a = (alpha.clamp(0, 1) * 255).round();
     final mask = _buildFillCoverageMask(bounds, contours, rule);
-    final dstPixels = surface.pixels;
-    final dstWidth = surface.width;
+    final dstPixels = _surface.pixels;
+    final dstWidth = _surface.width;
     final maskValues = mask._values;
     final maskBoundary = mask._boundary;
     final maskWidth = mask.width;
@@ -2535,10 +2160,10 @@ class _DirectPdfDevice implements PdfDevice {
       }
     }
     return _IntRect(
-      left.floor().clamp(0, surface.width),
-      top.floor().clamp(0, surface.height),
-      right.ceil().clamp(0, surface.width),
-      bottom.ceil().clamp(0, surface.height),
+      left.floor().clamp(0, _surface.width),
+      top.floor().clamp(0, _surface.height),
+      right.ceil().clamp(0, _surface.width),
+      bottom.ceil().clamp(0, _surface.height),
     );
   }
 
@@ -2616,10 +2241,13 @@ class _DirectPdfDevice implements PdfDevice {
     final radius = width / 2;
     final antialiasRadius = radius + 0.5;
     final bounds = _IntRect(
-      (math.min(p1.x, p2.x) - antialiasRadius).floor().clamp(0, surface.width),
-      (math.min(p1.y, p2.y) - antialiasRadius).floor().clamp(0, surface.height),
-      (math.max(p1.x, p2.x) + antialiasRadius).ceil().clamp(0, surface.width),
-      (math.max(p1.y, p2.y) + antialiasRadius).ceil().clamp(0, surface.height),
+      (math.min(p1.x, p2.x) - antialiasRadius).floor().clamp(0, _surface.width),
+      (math.min(p1.y, p2.y) - antialiasRadius).floor().clamp(
+        0,
+        _surface.height,
+      ),
+      (math.max(p1.x, p2.x) + antialiasRadius).ceil().clamp(0, _surface.width),
+      (math.max(p1.y, p2.y) + antialiasRadius).ceil().clamp(0, _surface.height),
     ).intersect(_clip.bounds);
     if (bounds.isEmpty) return;
     final dx = p2.x - p1.x;
@@ -2638,7 +2266,7 @@ class _DirectPdfDevice implements PdfDevice {
           radius,
         );
         if (coverage <= 0) continue;
-        surface.blendPixel(px, py, r, g, b, (a * coverage).round());
+        _surface.blendPixel(px, py, r, g, b, (a * coverage).round());
       }
     }
   }
@@ -2676,12 +2304,12 @@ class _DirectPdfDevice implements PdfDevice {
     final cache = imageDecodeCache;
     return cache == null
         ? _decodePdfImage(request, cosDocument)
-        : cache.decode(request, cosDocument);
+        : cache._decode(request, cosDocument);
   }
 }
 
-const _maxDecodedImageCacheBytes = 64 * 1024 * 1024;
-const _maxDecodedImageCacheEntries = 64;
+const _defaultMaxDecodedImageCacheBytes = 64 * 1024 * 1024;
+const _defaultMaxDecodedImageCacheEntries = 64;
 
 class _ImageColorContext {
   _ImageColorContext._({
@@ -2814,11 +2442,35 @@ _ImageColorSpace? _outputIntentCmyk(cos.CosDocument cosDocument) {
   return null;
 }
 
-class _ImageDecodeCache {
+/// Cache for decoded image XObjects.
+class PdfImageDecodeCache {
+  /// Creates an image decode cache.
+  PdfImageDecodeCache({
+    this.maxEntries = _defaultMaxDecodedImageCacheEntries,
+    this.maxBytes = _defaultMaxDecodedImageCacheBytes,
+  });
+
+  /// The maximum number of decoded images retained.
+  final int maxEntries;
+
+  /// The maximum total bytes retained by decoded images.
+  final int maxBytes;
   final _entries = <_ImageDecodeKey, _DecodedImage>{};
   var _bytes = 0;
 
-  _DecodedImage? decode(
+  /// The current number of decoded images in the cache.
+  int get entryCount => _entries.length;
+
+  /// The current total byte size of decoded image data.
+  int get byteCount => _bytes;
+
+  /// Removes all decoded images from the cache.
+  void clear() {
+    _entries.clear();
+    _bytes = 0;
+  }
+
+  _DecodedImage? _decode(
     _ImageDrawRequest request,
     cos.CosDocument cosDocument,
   ) {
@@ -2838,8 +2490,7 @@ class _ImageDecodeCache {
   }
 
   void _trim() {
-    while (_entries.length > _maxDecodedImageCacheEntries ||
-        _bytes > _maxDecodedImageCacheBytes) {
+    while (_entries.length > maxEntries || _bytes > maxBytes) {
       final key = _entries.keys.first;
       final removed = _entries.remove(key);
       if (removed == null) break;
@@ -3674,24 +3325,6 @@ class _ScanlineIntersection {
 
   final double x;
   final int windingDelta;
-}
-
-class _RectD {
-  const _RectD(this.left, this.top, this.right, this.bottom);
-
-  final double left;
-  final double top;
-  final double right;
-  final double bottom;
-
-  bool intersects(_RectD other) =>
-      left <= other.right &&
-      right >= other.left &&
-      top <= other.bottom &&
-      bottom >= other.top;
-
-  _RectD inflate(double amount) =>
-      _RectD(left - amount, top - amount, right + amount, bottom + amount);
 }
 
 class _IntRect {

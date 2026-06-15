@@ -123,7 +123,7 @@ void main() {
 
 Uint8List _renderBgra(Uint8List pdf) {
   final document = PdfDocument.open(pdf, password: '');
-  final renderer = PurePdfPageRenderer(document);
+  final renderer = PdfPageRenderer(document);
   return renderer.renderBgraRegion(
     pageNumber: 1,
     x: 0,

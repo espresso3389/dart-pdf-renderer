@@ -359,6 +359,7 @@ final Uint8List _pdfiumCmykTable = base64Decode(
   'IRwgFhMXCwYKAQAAAAAAAAAA',
 );
 
+/// Converts CMYK bytes to RGB bytes using PDFium's CMYK conversion table.
 void pdfiumCmykToRgb(int c, int m, int y, int k, List<int> rgb) {
   final fixC = c << 8;
   final fixM = m << 8;

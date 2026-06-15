@@ -185,29 +185,29 @@ String _supportNote(
   List<String> filters,
   String colorSpace,
 ) {
-  if (imageMask) return 'pure: stencil';
+  if (imageMask) return 'renderer: stencil';
   if (filters.contains('DCTDecode') || filters.contains('DCT')) {
     if (colorSpace.contains('DeviceCMYK')) {
-      return 'pure: supported DCT CMYK';
+      return 'renderer: supported DCT CMYK';
     }
-    return 'pure: DCT via image package';
+    return 'renderer: DCT via image package';
   }
-  if (bits != 8) return 'pure: unsupported bits';
+  if (bits != 8) return 'renderer: unsupported bits';
   if (colorSpace == '/DeviceGray' ||
       colorSpace == '/G' ||
       colorSpace == '/DeviceRGB' ||
       colorSpace == '/RGB' ||
       colorSpace == '/DeviceCMYK' ||
       colorSpace == '/CMYK') {
-    return 'pure: supported';
+    return 'renderer: supported';
   }
   if (colorSpace.startsWith('[/Indexed ') &&
       (colorSpace.contains('DeviceGray') ||
           colorSpace.contains('DeviceRGB') ||
           colorSpace.contains('DeviceCMYK'))) {
-    return 'pure: supported indexed';
+    return 'renderer: supported indexed';
   }
-  return 'pure: unsupported color space';
+  return 'renderer: unsupported color space';
 }
 
 class _Options {

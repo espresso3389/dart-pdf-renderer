@@ -65,7 +65,7 @@ class PdfrxDartPdfEntryFunctions implements pdfrx.PdfrxEntryFunctions {
       firstAttemptByEmptyPassword: firstAttemptByEmptyPassword,
     );
     final originalBytes = Uint8List.fromList(data);
-    final asyncRenderer = await PurePdfPageAsyncRenderer.create(
+    final asyncRenderer = await PdfPageAsyncRenderer.create(
       originalBytes,
       password: opened.password,
     );
@@ -294,7 +294,7 @@ class _DartPdfDocument extends pdfrx.PdfDocument {
   final _events = StreamController<pdfrx.PdfDocumentEvent>.broadcast();
 
   late List<pdfrx.PdfPage> _pages;
-  final PurePdfPageAsyncRenderer _asyncRenderer;
+  final PdfPageAsyncRenderer _asyncRenderer;
   bool _disposed = false;
 
   @override
@@ -678,7 +678,7 @@ class _DartPdfCancellationToken
     implements pdfrx.PdfPageRenderCancellationToken {
   _DartPdfCancellationToken(this._token);
 
-  final PurePdfRenderCancellationToken _token;
+  final PdfRenderCancellationToken _token;
 
   @override
   void cancel() => _token.cancel();

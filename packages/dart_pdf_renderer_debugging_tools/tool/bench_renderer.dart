@@ -6,7 +6,7 @@ import 'package:pdf_document/pdf_document.dart';
 
 const _usage = '''
 usage:
-  dart run tool/bench_pure_renderer.dart <pdf> [options]
+  dart run tool/bench_renderer.dart <pdf> [options]
 
 options:
   --page <n>          1-based page number (default: 1)
@@ -41,7 +41,7 @@ void main(List<String> args) {
   final document = PdfDocument.open(bytes, password: '');
   openWatch.stop();
 
-  final sizingRenderer = PurePdfPageRenderer(document);
+  final sizingRenderer = PdfPageRenderer(document);
   final pageSize = sizingRenderer.pageSizes[options.pageNumber - 1];
   final request = _RenderRequest.fromPageSize(pageSize, options);
 
@@ -60,14 +60,14 @@ void main(List<String> args) {
   final fresh = _TimingSamples();
   var checksum = 0;
   for (var i = 0; i < options.freshTrials; i++) {
-    final renderer = PurePdfPageRenderer(document);
+    final renderer = PdfPageRenderer(document);
     final result = _timeRender(renderer, request, options);
     fresh.add(result);
     checksum ^= result.checksum;
   }
   fresh.print('fresh-renderer first render');
 
-  final hotRenderer = PurePdfPageRenderer(document);
+  final hotRenderer = PdfPageRenderer(document);
   final warmup = _timeRender(hotRenderer, request, options);
   checksum ^= warmup.checksum;
   stdout.writeln('hot warmup: ${warmup.summary}');
@@ -83,7 +83,7 @@ void main(List<String> args) {
 }
 
 _RenderResult _timeRender(
-  PurePdfPageRenderer renderer,
+  PdfPageRenderer renderer,
   _RenderRequest request,
   _Options options,
 ) {

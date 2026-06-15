@@ -52,7 +52,7 @@ Future<void> _scan(_Options options) async {
 
   final pdfBytes = await File(options.pdfPath).readAsBytes();
   final dartPdfDoc = dart_pdf.PdfDocument.open(pdfBytes, password: '');
-  final dartPdfRenderer = PurePdfPageRenderer(dartPdfDoc);
+  final dartPdfRenderer = PdfPageRenderer(dartPdfDoc);
   final pdfiumDoc = await pdfium.openFile(options.pdfPath);
   try {
     final pageCount = math.min(
@@ -117,7 +117,7 @@ Future<void> _scan(_Options options) async {
 }
 
 Future<_PageDiff> _comparePage(
-  PurePdfPageRenderer dartPdfRenderer,
+  PdfPageRenderer dartPdfRenderer,
   pdfrx.PdfDocument pdfiumDoc,
   int pageNumber,
   _Options options,
@@ -145,7 +145,7 @@ Future<_PageDiff> _comparePage(
 }
 
 _RenderedPage _renderDartPdfPage(
-  PurePdfPageRenderer renderer,
+  PdfPageRenderer renderer,
   int pageNumber,
   _Options options,
 ) {
@@ -278,7 +278,7 @@ _PageDiff _diffBgra({
 }
 
 Future<void> _writePageOutputs(
-  PurePdfPageRenderer dartPdfRenderer,
+  PdfPageRenderer dartPdfRenderer,
   pdfrx.PdfDocument pdfiumDoc,
   int pageNumber,
   _Options options,

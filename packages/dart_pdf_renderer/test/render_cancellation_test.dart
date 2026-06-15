@@ -7,7 +7,7 @@ import 'support/render_test_pdf.dart';
 
 void main() {
   test('render with an uncancelled token returns image pixels', () async {
-    final renderer = await PurePdfPageAsyncRenderer.create(_testPdf());
+    final renderer = await PdfPageAsyncRenderer.create(_testPdf());
     try {
       final token = renderer.createCancellationToken();
       final bgra = await _render(renderer, cancellationToken: token);
@@ -21,7 +21,7 @@ void main() {
   });
 
   test('render with an already cancelled token returns null', () async {
-    final renderer = await PurePdfPageAsyncRenderer.create(_testPdf());
+    final renderer = await PdfPageAsyncRenderer.create(_testPdf());
     try {
       final token = renderer.createCancellationToken()..cancel();
       final bgra = await _render(renderer, cancellationToken: token);
@@ -33,7 +33,7 @@ void main() {
   });
 
   test('render cancelled after queueing returns null', () async {
-    final renderer = await PurePdfPageAsyncRenderer.create(_testPdf());
+    final renderer = await PdfPageAsyncRenderer.create(_testPdf());
     try {
       final blocker = renderer.renderBgraRegion(
         pageNumber: 1,
@@ -69,8 +69,8 @@ Uint8List _testPdf() => imageXObjectPdf(
 );
 
 Future<Uint8List?> _render(
-  PurePdfPageAsyncRenderer renderer, {
-  PurePdfRenderCancellationToken? cancellationToken,
+  PdfPageAsyncRenderer renderer, {
+  PdfRenderCancellationToken? cancellationToken,
 }) {
   return renderer.renderBgraRegion(
     pageNumber: 1,
