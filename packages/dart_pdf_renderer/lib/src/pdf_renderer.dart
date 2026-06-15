@@ -2630,6 +2630,7 @@ _DecodedImage? _decodeSampledImage(
     math.max(1, colorSpace.inputComponents),
     0,
   );
+  final iccTransform = _iccTransformFor(colorSpace);
   for (var i = 0; i < pixelCount; i++) {
     switch (colorSpace.kind) {
       case _ImageColorSpaceKind.gray:
@@ -2638,7 +2639,7 @@ _DecodedImage? _decodeSampledImage(
           bits,
           0,
         );
-        colorSpace.toRgbBytes(componentsBuffer, rgb);
+        colorSpace.toRgbBytes(componentsBuffer, rgb, iccTransform);
         rgba[dstOffset] = rgb[0];
         rgba[dstOffset + 1] = rgb[1];
         rgba[dstOffset + 2] = rgb[2];
@@ -2658,7 +2659,7 @@ _DecodedImage? _decodeSampledImage(
           bits,
           2,
         );
-        colorSpace.toRgbBytes(componentsBuffer, rgb);
+        colorSpace.toRgbBytes(componentsBuffer, rgb, iccTransform);
         rgba[dstOffset] = rgb[0];
         rgba[dstOffset + 1] = rgb[1];
         rgba[dstOffset + 2] = rgb[2];
@@ -2683,7 +2684,7 @@ _DecodedImage? _decodeSampledImage(
           bits,
           3,
         );
-        colorSpace.toRgbBytes(componentsBuffer, rgb);
+        colorSpace.toRgbBytes(componentsBuffer, rgb, iccTransform);
         rgba[dstOffset] = rgb[0];
         rgba[dstOffset + 1] = rgb[1];
         rgba[dstOffset + 2] = rgb[2];
@@ -2728,6 +2729,8 @@ _DecodedImage? _decodeCmykJpeg(
     final c3 = jpeg.components[2];
     final c4 = jpeg.components[3];
     final colorTransform = (jpeg.adobe?.transformCode ?? 0) != 0;
+    final componentsBuffer = List<int>.filled(4, 0);
+    final iccTransform = _iccTransformFor(colorSpace);
     var dstOffset = 0;
 
     for (var y = 0; y < height; y++) {
@@ -2759,12 +2762,11 @@ _DecodedImage? _decodeCmykJpeg(
           yellow = line3[x3];
         }
 
-        colorSpace.toRgbBytes([
-          decode.toByte(cyan, 8, 0),
-          decode.toByte(magenta, 8, 1),
-          decode.toByte(yellow, 8, 2),
-          decode.toByte(black, 8, 3),
-        ], rgb);
+        componentsBuffer[0] = decode.toByte(cyan, 8, 0);
+        componentsBuffer[1] = decode.toByte(magenta, 8, 1);
+        componentsBuffer[2] = decode.toByte(yellow, 8, 2);
+        componentsBuffer[3] = decode.toByte(black, 8, 3);
+        colorSpace.toRgbBytes(componentsBuffer, rgb, iccTransform);
         rgba[dstOffset] = rgb[0];
         rgba[dstOffset + 1] = rgb[1];
         rgba[dstOffset + 2] = rgb[2];
@@ -2963,6 +2965,7 @@ void _applyDecodedRgbImageColorSpace(
 
   final components = List<int>.filled(colorSpace.inputComponents, 0);
   final rgb = List<int>.filled(3, 0);
+  final iccTransform = _iccTransformFor(colorSpace);
   for (var i = 0; i < rgba.length; i += 4) {
     if (colorSpace.kind == _ImageColorSpaceKind.gray) {
       components[0] = decode.toByte(rgba[i], 8, 0);
@@ -2971,7 +2974,7 @@ void _applyDecodedRgbImageColorSpace(
       components[1] = decode.toByte(rgba[i + 1], 8, 1);
       components[2] = decode.toByte(rgba[i + 2], 8, 2);
     }
-    colorSpace.toRgbBytes(components, rgb);
+    colorSpace.toRgbBytes(components, rgb, iccTransform);
     rgba[i] = rgb[0];
     rgba[i + 1] = rgb[1];
     rgba[i + 2] = rgb[2];
@@ -3041,15 +3044,14 @@ class _ImageColorSpace {
     _ImageColorSpaceKind.indexed => 1,
   };
 
-  void toRgbBytes(List<int> components, List<int> rgb) {
+  void toRgbBytes(
+    List<int> components,
+    List<int> rgb, [
+    _IccColorTransform? iccTransform,
+  ]) {
     final profile = iccProfile;
     if (profile != null && components.length >= profile.channels) {
-      final color = profile.toSrgb([
-        for (var i = 0; i < profile.channels; i++) components[i] / 255,
-      ]);
-      rgb[0] = _unitToByte(color.red);
-      rgb[1] = _unitToByte(color.green);
-      rgb[2] = _unitToByte(color.blue);
+      (iccTransform ?? _IccColorTransform(profile)).toRgbBytes(components, rgb);
       return;
     }
     switch (kind) {
@@ -3171,11 +3173,117 @@ IccProfile? _parseIccProfile(
   cos.CosDocument cosDocument,
   cos.CosStream profile,
 ) {
+  final cached = _iccProfileCache[profile];
+  if (cached != null) return cached.profile;
   try {
-    return IccProfile.parse(cosDocument.decodeStreamData(profile));
+    final bytes = cosDocument.decodeStreamData(profile);
+    if (_isLikelySrgbIccProfile(bytes)) {
+      _iccProfileCache[profile] = const _CachedIccProfile(null);
+      return null;
+    }
+    final parsed = IccProfile.parse(bytes);
+    _iccProfileCache[profile] = _CachedIccProfile(parsed);
+    return parsed;
   } on Exception {
+    _iccProfileCache[profile] = const _CachedIccProfile(null);
     return null;
   }
+}
+
+bool _isLikelySrgbIccProfile(Uint8List bytes) {
+  if (bytes.length < 128) return false;
+  if (String.fromCharCodes(bytes, 16, 20) != 'RGB ') return false;
+  return _containsAsciiIgnoreCase(bytes, 'sRGB') ||
+      (_containsAsciiIgnoreCase(bytes, 'IEC') &&
+          _containsAsciiIgnoreCase(bytes, '61966'));
+}
+
+bool _containsAsciiIgnoreCase(Uint8List bytes, String needle) {
+  if (needle.isEmpty || bytes.length < needle.length) return false;
+  final lowerNeedle = [
+    for (var i = 0; i < needle.length; i++) _asciiLower(needle.codeUnitAt(i)),
+  ];
+  final lastStart = bytes.length - lowerNeedle.length;
+  for (var start = 0; start <= lastStart; start++) {
+    var matches = true;
+    for (var i = 0; i < lowerNeedle.length; i++) {
+      if (_asciiLower(bytes[start + i]) != lowerNeedle[i]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return true;
+  }
+  return false;
+}
+
+int _asciiLower(int value) =>
+    value >= 0x41 && value <= 0x5a ? value + 0x20 : value;
+
+_IccColorTransform? _iccTransformFor(_ImageColorSpace colorSpace) {
+  final profile = colorSpace.iccProfile;
+  return profile == null ? null : _IccColorTransform(profile);
+}
+
+final _iccProfileCache = Expando<_CachedIccProfile>('dart_pdf_renderer.icc');
+
+class _CachedIccProfile {
+  const _CachedIccProfile(this.profile);
+
+  final IccProfile? profile;
+}
+
+const _maxIccTransformCacheEntries = 1 << 20;
+
+class _IccColorTransform {
+  _IccColorTransform(this.profile)
+    : values = List<double>.filled(profile.channels, 0, growable: false);
+
+  final IccProfile profile;
+  final List<double> values;
+  final _cache = <int, int>{};
+
+  void toRgbBytes(List<int> components, List<int> rgb) {
+    final key = _componentKey(components, profile.channels);
+    final cached = _cache[key];
+    if (cached != null) {
+      _unpackRgb(cached, rgb);
+      return;
+    }
+
+    for (var i = 0; i < profile.channels; i++) {
+      values[i] = components[i] / 255;
+    }
+    final color = profile.toSrgb(values);
+    final packed = _packRgb(
+      _unitToByte(color.red),
+      _unitToByte(color.green),
+      _unitToByte(color.blue),
+    );
+    if (_cache.length < _maxIccTransformCacheEntries) {
+      _cache[key] = packed;
+    }
+    _unpackRgb(packed, rgb);
+  }
+}
+
+int _componentKey(List<int> components, int channels) => switch (channels) {
+  1 => components[0],
+  3 => components[0] | (components[1] << 8) | (components[2] << 16),
+  4 =>
+    components[0] |
+        (components[1] << 8) |
+        (components[2] << 16) |
+        (components[3] << 24),
+  _ => Object.hashAll(components.take(channels)),
+};
+
+int _packRgb(int red, int green, int blue) => red | (green << 8) | (blue << 16);
+
+void _unpackRgb(int packed, List<int> rgb) {
+  rgb[0] = packed & 0xff;
+  rgb[1] = (packed >> 8) & 0xff;
+  rgb[2] = (packed >> 16) & 0xff;
 }
 
 Uint8List? _lookupBytes(cos.CosDocument cosDocument, cos.CosObject object) {
