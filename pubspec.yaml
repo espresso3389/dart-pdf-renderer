@@ -1,0 +1,8 @@
+name: dart_pdf_renderer_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.12.1
+
+workspace:
+  - packages/*

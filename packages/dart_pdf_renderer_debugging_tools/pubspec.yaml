@@ -1,0 +1,21 @@
+name: dart_pdf_renderer_debugging_tools
+description: Debugging and renderer comparison tools for dart_pdf_renderer.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.12.1
+
+resolution: workspace
+
+dependencies:
+  dart_pdf_renderer: ^0.0.1
+  image:
+  pdf_cos: ^0.1.0
+  pdf_document: ^0.1.0
+  pdf_graphics: ^0.1.0
+  pdfrx_engine:
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+

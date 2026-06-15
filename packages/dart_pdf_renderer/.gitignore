@@ -1,0 +1,9 @@
+# Dart/Pub
+.dart_tool/
+build/
+coverage/
+pubspec.lock
+
+# OS/editor
+.DS_Store
+*.swp

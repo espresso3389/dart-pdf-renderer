@@ -1,0 +1,19 @@
+name: dart_pdf_renderer
+description: A pure-Dart PDF page renderer with synchronous and isolate-backed asynchronous APIs.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.12.1
+
+resolution: workspace
+
+dependencies:
+  image:
+  pdf_cos: ^0.1.0
+  pdf_document: ^0.1.0
+  pdf_graphics: ^0.1.0
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  test: ^1.26.0
