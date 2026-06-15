@@ -85,6 +85,18 @@ void main() {
     expect(_whitePixelsBgra(bgra), inInclusiveRange(64, 160));
   });
 
+  test('honors row padding in image masks', () {
+    final bgra = _renderBgra(
+      imageXObjectPdf(
+        '<< /Type /XObject /Subtype /Image /Width 2 /Height 2 '
+        '/ImageMask true /BitsPerComponent 1 /Decode [1 0] /Length 2 >>',
+        <int>[0x40, 0x40],
+      ),
+    );
+    expect(_blackPixelsBgra(bgra, leftHalf: true), lessThan(20));
+    expect(_blackPixelsBgra(bgra, leftHalf: false), greaterThanOrEqualTo(80));
+  });
+
   test('renders a named DeviceCMYK image color space', () {
     final bgra = _renderBgra(
       imageXObjectPdf(
@@ -202,4 +214,20 @@ int _whitePixelsBgra(List<int> bgra) {
     if (r > 230 && g > 230 && b > 230) white++;
   }
   return white;
+}
+
+int _blackPixelsBgra(List<int> bgra, {required bool leftHalf}) {
+  var black = 0;
+  for (var y = 0; y < 16; y++) {
+    final startX = leftHalf ? 0 : 8;
+    final endX = leftHalf ? 8 : 16;
+    for (var x = startX; x < endX; x++) {
+      final i = (y * 16 + x) * 4;
+      final b = bgra[i];
+      final g = bgra[i + 1];
+      final r = bgra[i + 2];
+      if (r < 40 && g < 40 && b < 40) black++;
+    }
+  }
+  return black;
 }

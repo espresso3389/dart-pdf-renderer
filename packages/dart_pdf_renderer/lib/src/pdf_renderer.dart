@@ -3418,12 +3418,13 @@ _DecodedImage? _decodeStencilImage(
   final r = (request.stencilColor.red.clamp(0, 1) * 255).round();
   final g = (request.stencilColor.green.clamp(0, 1) * 255).round();
   final b = (request.stencilColor.blue.clamp(0, 1) * 255).round();
+  final rowStride = (width + 7) >> 3;
   for (var y = 0; y < height; y++) {
     for (var x = 0; x < width; x++) {
       final bitIndex = y * width + x;
-      final byteIndex = bitIndex ~/ 8;
+      final byteIndex = y * rowStride + x ~/ 8;
       if (byteIndex >= data.length) continue;
-      final bit = 7 - (bitIndex % 8);
+      final bit = 7 - (x % 8);
       final painted = ((data[byteIndex] >> bit) & 1) != 0;
       final offset = bitIndex * 4;
       rgba[offset] = r;
