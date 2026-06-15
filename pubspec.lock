@@ -501,29 +501,26 @@ packages:
     source: hosted
     version: "2.3.0"
   pdf_cos:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: pdf_cos
-      sha256: "8d58e6bb4201a8c4e2e620ddf8b1d49020b6d4970d2ab6b7fe8bdf5f91c0527c"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.1.0"
+      path: "third_party/dart-pdf/packages/pdf_cos"
+      relative: true
+    source: path
+    version: "1.2.0"
   pdf_document:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: pdf_document
-      sha256: "72de4a765c41bd5a2de5a0fdb32a4f2c266730f53a9a7883449bee1db1ae53bb"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.1.0"
+      path: "third_party/dart-pdf/packages/pdf_document"
+      relative: true
+    source: path
+    version: "1.2.0"
   pdf_graphics:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: pdf_graphics
-      sha256: "8741bd737f2a706df9850062d1e2a3102c80f0b239f01a0206fa1b8460073f13"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.1.0"
+      path: "third_party/dart-pdf/packages/pdf_graphics"
+      relative: true
+    source: path
+    version: "1.2.0"
   pdfium_dart:
     dependency: transitive
     description:

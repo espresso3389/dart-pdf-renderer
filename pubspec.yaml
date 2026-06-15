@@ -6,3 +6,11 @@ environment:
 
 workspace:
   - packages/*
+
+dependency_overrides:
+  pdf_cos:
+    path: third_party/dart-pdf/packages/pdf_cos
+  pdf_document:
+    path: third_party/dart-pdf/packages/pdf_document
+  pdf_graphics:
+    path: third_party/dart-pdf/packages/pdf_graphics

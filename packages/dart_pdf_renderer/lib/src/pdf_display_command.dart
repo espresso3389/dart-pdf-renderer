@@ -38,7 +38,10 @@ abstract class PdfDisplayCommandDevice {
   void setBlendMode(PdfBlendMode mode);
 
   /// Begins an isolated transparency group with [alpha].
-  void beginGroup(double alpha);
+  ///
+  /// If [knockout] is true, overlapping objects in the group knock out earlier
+  /// objects instead of compositing over them.
+  void beginGroup(double alpha, {bool knockout = false});
 
   /// Ends the current transparency group.
   void endGroup();
@@ -232,13 +235,17 @@ class PdfSetBlendModeCommand extends PdfDisplayCommand {
 /// A command that begins a transparency group.
 class PdfBeginGroupCommand extends PdfDisplayCommand {
   /// Creates a begin-group command.
-  const PdfBeginGroupCommand(this.alpha);
+  const PdfBeginGroupCommand(this.alpha, {this.knockout = false});
 
   /// The group alpha.
   final double alpha;
 
+  /// Whether objects in the group knock out earlier group content.
+  final bool knockout;
+
   @override
-  void replay(PdfDisplayCommandDevice device) => device.beginGroup(alpha);
+  void replay(PdfDisplayCommandDevice device) =>
+      device.beginGroup(alpha, knockout: knockout);
 }
 
 /// A command that ends a transparency group.

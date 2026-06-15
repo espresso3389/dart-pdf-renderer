@@ -6,7 +6,20 @@ import 'package:image/image.dart' as image;
 import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
 import 'package:pdf_cos/pdf_cos.dart' as cos;
 import 'package:pdf_document/pdf_document.dart';
-import 'package:pdf_graphics/pdf_graphics.dart';
+import 'package:pdf_graphics/pdf_graphics.dart'
+    hide
+        PdfBeginGroupCommand,
+        PdfClipPathCommand,
+        PdfDrawImageCommand,
+        PdfDrawTextCommand,
+        PdfEndGroupCommand,
+        PdfFillMeshCommand,
+        PdfFillPathCommand,
+        PdfFillPathGradientCommand,
+        PdfRestoreCommand,
+        PdfSaveCommand,
+        PdfSetBlendModeCommand,
+        PdfStrokePathCommand;
 
 import 'pdf_display_command.dart';
 import 'pdfium_cmyk.dart';
@@ -507,8 +520,8 @@ class _RecordingPdfDevice implements PdfDevice {
   }
 
   @override
-  void beginGroup(double alpha) {
-    commands.add(PdfBeginGroupCommand(alpha));
+  void beginGroup(double alpha, {bool knockout = false}) {
+    commands.add(PdfBeginGroupCommand(alpha, knockout: knockout));
   }
 
   @override
@@ -524,6 +537,9 @@ class _RecordingPdfDevice implements PdfDevice {
     required bool luminosity,
     required PdfRect backdrop,
     required void Function() drawMask,
+    double backdropLuminance = 0,
+    double transferScale = 1,
+    double transferOffset = 0,
   }) {
     drawMask();
   }
@@ -1605,6 +1621,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
 
     final dstPixels = _surface.pixels;
     final dstWidth = _surface.width;
+    _surface.markDirty(bounds);
     final srcPixels = decoded.rgba;
     final srcWidth = decoded.width;
     final srcHeight = decoded.height;
@@ -1668,6 +1685,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   ) {
     final dstPixels = _surface.pixels;
     final dstWidth = _surface.width;
+    _surface.markDirty(bounds);
     final srcPixels = decoded.rgba;
     final srcWidth = decoded.width;
     final srcHeight = decoded.height;
@@ -1749,8 +1767,8 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   @override
-  void beginGroup(double alpha) {
-    _trace('beginGroup', _clip.bounds, 'alpha=${_f(alpha)}');
+  void beginGroup(double alpha, {bool knockout = false}) {
+    _trace('beginGroup', _clip.bounds, 'alpha=${_f(alpha)} knockout=$knockout');
     _groupAlphaStack.add(alpha.clamp(0, 1));
     _surfaceStack.add(_RgbaSurface(_surface.width, _surface.height));
   }
@@ -1764,8 +1782,10 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
         : _groupAlphaStack.removeLast();
     _trace('endGroup', _clip.bounds, 'alpha=${_f(alpha)}');
     final parent = _surface;
-    for (var y = 0; y < layer.height; y++) {
-      for (var x = 0; x < layer.width; x++) {
+    final dirtyBounds = layer.dirtyBounds;
+    if (dirtyBounds == null || dirtyBounds.isEmpty) return;
+    for (var y = dirtyBounds.top; y < dirtyBounds.bottom; y++) {
+      for (var x = dirtyBounds.left; x < dirtyBounds.right; x++) {
         final offset = (y * layer.width + x) * 4;
         final a = (layer.pixels[offset + 3] * alpha).round();
         if (a == 0) continue;
@@ -1791,11 +1811,16 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     required bool luminosity,
     required PdfRect backdrop,
     required void Function() drawMask,
+    double backdropLuminance = 0,
+    double transferScale = 1,
+    double transferOffset = 0,
   }) {
     _traceRegion(
       'endSoftMasked',
       _rectToTraceRegion(backdrop),
-      'luminosity=$luminosity',
+      'luminosity=$luminosity backdropLuminance=${_f(backdropLuminance)} '
+          'transferScale=${_f(transferScale)} '
+          'transferOffset=${_f(transferOffset)}',
     );
     drawMask();
   }
@@ -1844,9 +1869,14 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     final g = (color.green.clamp(0, 1) * 255).round();
     final b = (color.blue.clamp(0, 1) * 255).round();
     final a = (alpha.clamp(0, 1) * 255).round();
+    if (_clip.paths.isEmpty && _isPixelAlignedRectangle(contours, bounds)) {
+      _fillRectangle(bounds, r, g, b, a);
+      return;
+    }
     final mask = _buildFillCoverageMask(bounds, contours, rule);
     final dstPixels = _surface.pixels;
     final dstWidth = _surface.width;
+    _surface.markDirty(bounds);
     final maskValues = mask._values;
     final maskBoundary = mask._boundary;
     final maskWidth = mask.width;
@@ -1898,6 +1928,41 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
           }
         }
         maskOffset++;
+        dstOffset += 4;
+      }
+    }
+  }
+
+  void _fillRectangle(_IntRect bounds, int r, int g, int b, int a) {
+    if (a <= 0) return;
+    final clipped = bounds.intersect(_clip.bounds);
+    if (clipped.isEmpty) return;
+    final dstPixels = _surface.pixels;
+    final dstWidth = _surface.width;
+    _surface.markDirty(clipped);
+    if (a >= 255) {
+      for (var py = clipped.top; py < clipped.bottom; py++) {
+        var dstOffset = (py * dstWidth + clipped.left) * 4;
+        for (var px = clipped.left; px < clipped.right; px++) {
+          dstPixels[dstOffset] = r;
+          dstPixels[dstOffset + 1] = g;
+          dstPixels[dstOffset + 2] = b;
+          dstPixels[dstOffset + 3] = 255;
+          dstOffset += 4;
+        }
+      }
+      return;
+    }
+    final inv = 255 - a;
+    for (var py = clipped.top; py < clipped.bottom; py++) {
+      var dstOffset = (py * dstWidth + clipped.left) * 4;
+      for (var px = clipped.left; px < clipped.right; px++) {
+        dstPixels[dstOffset] = (r * a + dstPixels[dstOffset] * inv) ~/ 255;
+        dstPixels[dstOffset + 1] =
+            (g * a + dstPixels[dstOffset + 1] * inv) ~/ 255;
+        dstPixels[dstOffset + 2] =
+            (b * a + dstPixels[dstOffset + 2] * inv) ~/ 255;
+        if (a > dstPixels[dstOffset + 3]) dstPixels[dstOffset + 3] = a;
         dstOffset += 4;
       }
     }
@@ -2566,6 +2631,27 @@ _DecodedImage? _decodePdfImage(
     context: drawRequest.colorContext,
   );
   final filters = _filterNames(cosDocument, dict);
+  if (filters.contains('JPXDecode')) {
+    final bytes = cosDocument.decodeStreamData(
+      request.stream,
+      stopBeforeFilter: 'JPXDecode',
+    );
+    final decoded = cos.JpxDecoder.decode(bytes);
+    if (decoded == null) return null;
+    if (colorSpace != null &&
+        colorSpace.inputComponents == decoded.components) {
+      return _decodeSampledImage(
+        cosDocument,
+        dict,
+        decoded.samples,
+        decoded.width,
+        decoded.height,
+        8,
+        colorSpace,
+      );
+    }
+    return _decodeJpxWithoutPdfColorSpace(decoded);
+  }
   if (filters.contains('DCTDecode') || filters.contains('DCT')) {
     final bytes = cosDocument.decodeStreamData(
       request.stream,
@@ -2601,6 +2687,36 @@ _DecodedImage? _decodePdfImage(
     bits,
     colorSpace,
   );
+}
+
+_DecodedImage? _decodeJpxWithoutPdfColorSpace(cos.JpxImage image) {
+  final pixelCount = image.width * image.height;
+  if (image.samples.length < pixelCount * image.components) return null;
+  final rgba = Uint8List(pixelCount * 4);
+  var srcOffset = 0;
+  var dstOffset = 0;
+  switch (image.components) {
+    case 1:
+      for (var i = 0; i < pixelCount; i++) {
+        final gray = image.samples[srcOffset++];
+        rgba[dstOffset] = gray;
+        rgba[dstOffset + 1] = gray;
+        rgba[dstOffset + 2] = gray;
+        rgba[dstOffset + 3] = 255;
+        dstOffset += 4;
+      }
+    case 3:
+      for (var i = 0; i < pixelCount; i++) {
+        rgba[dstOffset] = image.samples[srcOffset++];
+        rgba[dstOffset + 1] = image.samples[srcOffset++];
+        rgba[dstOffset + 2] = image.samples[srcOffset++];
+        rgba[dstOffset + 3] = 255;
+        dstOffset += 4;
+      }
+    default:
+      return null;
+  }
+  return _DecodedImage(image.width, image.height, rgba, opaque: true);
 }
 
 _DecodedImage? _decodeSampledImage(
@@ -3362,8 +3478,12 @@ class _RgbaSurface {
   final int width;
   final int height;
   final Uint8List pixels;
+  _IntRect? _dirtyBounds;
+
+  _IntRect? get dirtyBounds => _dirtyBounds;
 
   void clear(int r, int g, int b, int a) {
+    _dirtyBounds = null;
     if (Endian.host == Endian.little) {
       pixels.buffer.asUint32List().fillRange(
         0,
@@ -3383,6 +3503,7 @@ class _RgbaSurface {
   void blendPixel(int x, int y, int r, int g, int b, int a) {
     if (x < 0 || y < 0 || x >= width || y >= height) return;
     if (a <= 0) return;
+    markDirty(_IntRect(x, y, x + 1, y + 1));
     final offset = (y * width + x) * 4;
     if (a >= 255) {
       pixels[offset] = r;
@@ -3396,6 +3517,14 @@ class _RgbaSurface {
     pixels[offset + 1] = (g * a + pixels[offset + 1] * inv) ~/ 255;
     pixels[offset + 2] = (b * a + pixels[offset + 2] * inv) ~/ 255;
     if (a > pixels[offset + 3]) pixels[offset + 3] = a;
+  }
+
+  void markDirty(_IntRect bounds) {
+    if (bounds.isEmpty) return;
+    final clipped = bounds.intersect(_IntRect(0, 0, width, height));
+    if (clipped.isEmpty) return;
+    final current = _dirtyBounds;
+    _dirtyBounds = current == null ? clipped : current.union(clipped);
   }
 }
 
@@ -3452,6 +3581,13 @@ class _IntRect {
     math.max(top, other.top),
     math.min(right, other.right),
     math.min(bottom, other.bottom),
+  );
+
+  _IntRect union(_IntRect other) => _IntRect(
+    math.min(left, other.left),
+    math.min(top, other.top),
+    math.max(right, other.right),
+    math.max(bottom, other.bottom),
   );
 
   PdfRenderTraceRegion toTraceRegion() => PdfRenderTraceRegion(
@@ -3693,6 +3829,19 @@ bool _isAxisAlignedRectangle(List<List<_Point>> contours) {
     corners |= 1 << bit;
   }
   return corners == 0x0f;
+}
+
+bool _isPixelAlignedRectangle(List<List<_Point>> contours, _IntRect bounds) {
+  if (!_isAxisAlignedRectangle(contours)) return false;
+  for (var i = 0; i < 4; i++) {
+    final point = contours.first[i];
+    if ((point.x - point.x.round()).abs() > 1e-6) return false;
+    if ((point.y - point.y.round()).abs() > 1e-6) return false;
+  }
+  return bounds.left >= 0 &&
+      bounds.top >= 0 &&
+      bounds.right > bounds.left &&
+      bounds.bottom > bounds.top;
 }
 
 double _isLeft(_Point p1, _Point p2, double x, double y) =>
