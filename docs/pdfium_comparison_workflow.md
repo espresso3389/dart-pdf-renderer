@@ -13,13 +13,6 @@ Concrete local filenames can be used in terminal commands while investigating,
 but they should stay in local logs, temporary notes, or chat context and should
 not become part of committed repository files.
 
-## Target Used So Far
-
-- A representative local PDF with JPX images, ICC color spaces, text outlines,
-  transparency groups, and luminosity soft masks.
-- Main regression page: the chapter-opener page that exposed the soft-mask bug.
-- Broader validation: the full document.
-
 ## Tools
 
 Run these commands from
@@ -93,65 +86,6 @@ Use this when the remaining difference is image-wide color or sampling drift.
 9. Commit and push each independently solved issue.
 10. Remove temporary PNGs under `packages/dart_pdf_renderer_debugging_tools/tmp`
     before committing.
-
-## Defect Fixed
-
-### Soft Mask Rendered As Visible Content
-
-The regression page showed a dark horizontal bar where PDFium rendered a pale
-gradient bar. The trace showed a `fillPathGradient` event after clipping, and
-resource inspection showed the gradient belonged to an `/SMask` luminosity mask:
-
-- `/ExtGState /GS1`
-- `/SMask`
-- `/S /Luminosity`
-- mask group with `/Group <</S /Transparency /CS /DeviceGray>>`
-- nested form with axial `/Shading`
-
-The renderer was calling `drawMask()` directly in `endSoftMasked`, so mask
-commands were painted visibly onto the page. The fix was:
-
-- record soft-mask drawing commands separately in the display list
-- make direct rendering capture soft-masked content into an offscreen surface
-- draw the mask into another offscreen surface
-- convert mask luminance or alpha to an opacity value
-- composite the captured content through that mask into the parent surface
-- add axial gradient rasterization so luminosity masks based on axial shading
-  can be evaluated instead of using a flat average color
-
-Commit:
-
-```text
-76deeb6 Support soft mask compositing
-```
-
-Validation:
-
-- `dart analyze`: passed
-- `dart test` in `packages/dart_pdf_renderer`: passed
-- focused regression crop: dark visible mask disappeared
-- whole-PDF scan: chapter-opener horizontal bars no longer dominated the worst
-  page list
-
-## Remaining Differences On The Current PDF
-
-### Text Outline Anti-Aliasing Drift
-
-Several text-heavy pages rank high by average delta after the soft-mask fix.
-Cropped comparisons show visually similar text, with differences concentrated
-along glyph/path edges. The trace for a representative text crop showed only
-path fills, not missing image or transparency operations. This is currently
-classified as anti-aliasing/path rasterization drift rather than a functional
-rendering defect.
-
-### JPX + ICCBased Image Color / Sampling Drift
-
-A representative cover/image page uses a large `JPXDecode` image with an
-`ICCBased` color space. The image region differs on most pixels, but with low
-average delta and no visible corruption. The renderer already enters the PDF
-color-space path when JPX components match the PDF `ColorSpace`, so this is
-currently classified as PDFium color-management and/or image-resampling drift
-rather than a confirmed bug.
 
 ## Batch Workflow For More PDFs
 
