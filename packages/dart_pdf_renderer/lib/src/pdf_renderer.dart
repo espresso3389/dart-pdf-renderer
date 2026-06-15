@@ -2818,13 +2818,22 @@ class PdfImageDecodeCache {
   PdfImageDecodeCache({
     this.maxEntries = _defaultMaxDecodedImageCacheEntries,
     this.maxBytes = _defaultMaxDecodedImageCacheBytes,
-  });
+    this.maxDownscaledImagePixels,
+  }) : assert(maxDownscaledImagePixels == null || maxDownscaledImagePixels > 0);
 
   /// The maximum number of decoded images retained.
   final int maxEntries;
 
   /// The maximum total bytes retained by decoded images.
   final int maxBytes;
+
+  /// Optional decoded-image area cap for cached images.
+  ///
+  /// When set, decoded images whose pixel area exceeds this value are
+  /// downscaled, preserving aspect ratio, before they are cached and returned.
+  /// Leave this null for full-resolution rendering.
+  final int? maxDownscaledImagePixels;
+
   final _entries = <_ImageDecodeKey, _DecodedImage>{};
   var _bytes = 0;
 
@@ -2853,10 +2862,11 @@ class PdfImageDecodeCache {
 
     final decoded = _decodePdfImage(request, cosDocument);
     if (decoded == null) return null;
-    _entries[key] = decoded;
-    _bytes += decoded.byteLength;
+    final cachedDecoded = _downscaleForCache(decoded, maxDownscaledImagePixels);
+    _entries[key] = cachedDecoded;
+    _bytes += cachedDecoded.byteLength;
     _trim();
-    return decoded;
+    return cachedDecoded;
   }
 
   void _trim() {
@@ -2867,6 +2877,54 @@ class PdfImageDecodeCache {
       _bytes -= removed.byteLength;
     }
   }
+}
+
+_DecodedImage _downscaleForCache(_DecodedImage decoded, int? maxPixels) {
+  if (maxPixels == null) return decoded;
+  final pixelCount = decoded.width * decoded.height;
+  if (pixelCount <= maxPixels) return decoded;
+
+  final scale = math.sqrt(maxPixels / pixelCount);
+  var width = math.max(1, (decoded.width * scale).floor());
+  var height = math.max(1, (decoded.height * scale).floor());
+  while (width * height > maxPixels) {
+    if (width >= height && width > 1) {
+      width--;
+    } else if (height > 1) {
+      height--;
+    } else {
+      break;
+    }
+  }
+
+  final rgba = Uint8List(width * height * 4);
+  final footprintX = decoded.width / width;
+  final footprintY = decoded.height / height;
+  var dstOffset = 0;
+  var opaque = true;
+  for (var y = 0; y < height; y++) {
+    final uy = 1 - (y + 0.5) / height;
+    for (var x = 0; x < width; x++) {
+      final ux = (x + 0.5) / width;
+      final sample = _sampleImageBox(
+        decoded.rgba,
+        decoded.width,
+        decoded.height,
+        ux,
+        uy,
+        footprintX,
+        footprintY,
+      );
+      rgba[dstOffset] = sample & 0xff;
+      rgba[dstOffset + 1] = (sample >>> 8) & 0xff;
+      rgba[dstOffset + 2] = (sample >>> 16) & 0xff;
+      final alpha = (sample >>> 24) & 0xff;
+      rgba[dstOffset + 3] = alpha;
+      if (alpha < 255) opaque = false;
+      dstOffset += 4;
+    }
+  }
+  return _DecodedImage(width, height, rgba, opaque: opaque);
 }
 
 class _ImageDecodeKey {
