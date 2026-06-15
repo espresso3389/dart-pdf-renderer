@@ -24,6 +24,7 @@ class PdfPageAsyncRenderer {
   static Future<PdfPageAsyncRenderer> create(
     Uint8List documentBytes, {
     String password = '',
+    int? maxDownscaledImagePixels,
   }) async {
     final readyPort = ReceivePort();
     final isolate = await Isolate.spawn(
@@ -32,6 +33,7 @@ class PdfPageAsyncRenderer {
         readyPort.sendPort,
         TransferableTypedData.fromList([documentBytes]),
         password,
+        maxDownscaledImagePixels,
       ),
     );
 
@@ -167,7 +169,12 @@ class PdfPageAsyncRenderer {
     try {
       final bytes = init.documentBytes.materialize().asUint8List();
       final document = PdfDocument.open(bytes, password: init.password);
-      final renderer = PdfPageRenderer(document);
+      final renderer = PdfPageRenderer(
+        document,
+        imageDecodeCache: PdfImageDecodeCache(
+          maxDownscaledImagePixels: init.maxDownscaledImagePixels,
+        ),
+      );
       final state = _PdfRendererWorkerState(commandPort, renderer);
       final queue = Queue<_PdfRendererWorkerMessage>();
       var scheduled = false;
@@ -230,11 +237,13 @@ class _PdfRendererWorkerInit {
     this.readyPort,
     this.documentBytes,
     this.password,
+    this.maxDownscaledImagePixels,
   );
 
   final SendPort readyPort;
   final TransferableTypedData documentBytes;
   final String password;
+  final int? maxDownscaledImagePixels;
 }
 
 class _PdfRendererWorkerReady {
