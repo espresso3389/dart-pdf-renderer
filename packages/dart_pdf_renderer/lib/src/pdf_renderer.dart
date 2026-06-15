@@ -2919,7 +2919,13 @@ class _ImageDecodeKey {
 _DecodedImage? _decodePdfImage(
   _ImageDrawRequest drawRequest,
   cos.CosDocument cosDocument,
-) {
+) => _decodePdfImageInternal(drawRequest, cosDocument, applySoftMask: true);
+
+_DecodedImage? _decodePdfImageInternal(
+  _ImageDrawRequest drawRequest,
+  cos.CosDocument cosDocument, {
+  required bool applySoftMask,
+}) {
   final request = drawRequest.request;
   final dict = request.stream.dictionary;
   final width = _intValue(cosDocument.resolve(dict['Width']));
@@ -2945,17 +2951,29 @@ _DecodedImage? _decodePdfImage(
     if (decoded == null) return null;
     if (colorSpace != null &&
         colorSpace.inputComponents == decoded.components) {
-      return _decodeSampledImage(
+      return _applyImageSoftMask(
         cosDocument,
         dict,
-        decoded.samples,
-        decoded.width,
-        decoded.height,
-        8,
-        colorSpace,
+        _decodeSampledImage(
+          cosDocument,
+          dict,
+          decoded.samples,
+          decoded.width,
+          decoded.height,
+          8,
+          colorSpace,
+        ),
+        drawRequest.colorContext,
+        applySoftMask: applySoftMask,
       );
     }
-    return _decodeJpxWithoutPdfColorSpace(decoded);
+    return _applyImageSoftMask(
+      cosDocument,
+      dict,
+      _decodeJpxWithoutPdfColorSpace(decoded),
+      drawRequest.colorContext,
+      applySoftMask: applySoftMask,
+    );
   }
   if (filters.contains('DCTDecode') || filters.contains('DCT')) {
     final bytes = cosDocument.decodeStreamData(
@@ -2964,7 +2982,15 @@ _DecodedImage? _decodePdfImage(
     );
     if (colorSpace?.kind == _ImageColorSpaceKind.cmyk) {
       final decoded = _decodeCmykJpeg(cosDocument, dict, bytes, colorSpace!);
-      if (decoded != null) return decoded;
+      if (decoded != null) {
+        return _applyImageSoftMask(
+          cosDocument,
+          dict,
+          decoded,
+          drawRequest.colorContext,
+          applySoftMask: applySoftMask,
+        );
+      }
     }
     final decoded = image.decodeImage(bytes);
     if (decoded == null) return null;
@@ -2978,20 +3004,82 @@ _DecodedImage? _decodePdfImage(
         bits,
       );
     }
-    return _DecodedImage(decoded.width, decoded.height, rgba, opaque: true);
+    return _applyImageSoftMask(
+      cosDocument,
+      dict,
+      _DecodedImage(decoded.width, decoded.height, rgba, opaque: true),
+      drawRequest.colorContext,
+      applySoftMask: applySoftMask,
+    );
   }
 
   if (!_isSupportedImageBits(bits) || colorSpace == null) return null;
   final data = cosDocument.decodeStreamData(request.stream);
-  return _decodeSampledImage(
+  return _applyImageSoftMask(
     cosDocument,
     dict,
-    data,
-    width,
-    height,
-    bits,
-    colorSpace,
+    _decodeSampledImage(
+      cosDocument,
+      dict,
+      data,
+      width,
+      height,
+      bits,
+      colorSpace,
+    ),
+    drawRequest.colorContext,
+    applySoftMask: applySoftMask,
   );
+}
+
+_DecodedImage? _applyImageSoftMask(
+  cos.CosDocument cosDocument,
+  cos.CosDictionary imageDict,
+  _DecodedImage? decoded,
+  _ImageColorContext colorContext, {
+  required bool applySoftMask,
+}) {
+  if (!applySoftMask || decoded == null) return decoded;
+  final smask = cosDocument.resolve(imageDict['SMask']);
+  if (smask is! cos.CosStream) return decoded;
+
+  final mask = _decodePdfImageInternal(
+    _ImageDrawRequest(
+      PdfImageRequest(
+        stream: smask,
+        transform: PdfMatrix.identity,
+        alpha: 1,
+        isStencil: false,
+        stencilColor: const PdfColor(0, 0, 0),
+        isInline: false,
+      ),
+      colorContext,
+    ),
+    cosDocument,
+    applySoftMask: false,
+  );
+  if (mask == null || mask.width <= 0 || mask.height <= 0) return decoded;
+
+  final rgba = decoded.rgba;
+  var opaque = true;
+  for (var y = 0; y < decoded.height; y++) {
+    final maskY = (y * mask.height ~/ decoded.height).clamp(0, mask.height - 1);
+    for (var x = 0; x < decoded.width; x++) {
+      final dstOffset = (y * decoded.width + x) * 4;
+      final maskX = (x * mask.width ~/ decoded.width).clamp(0, mask.width - 1);
+      final maskOffset = (maskY * mask.width + maskX) * 4;
+      final maskAlpha = mask.rgba[maskOffset + 3];
+      final maskLum = _luminance(
+        mask.rgba[maskOffset],
+        mask.rgba[maskOffset + 1],
+        mask.rgba[maskOffset + 2],
+      );
+      final alpha = (maskLum * maskAlpha).round();
+      rgba[dstOffset + 3] = rgba[dstOffset + 3] * alpha ~/ 255;
+      if (rgba[dstOffset + 3] < 255) opaque = false;
+    }
+  }
+  return _DecodedImage(decoded.width, decoded.height, rgba, opaque: opaque);
 }
 
 _DecodedImage? _decodeJpxWithoutPdfColorSpace(cos.JpxImage image) {

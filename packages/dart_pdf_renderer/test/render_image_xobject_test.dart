@@ -61,6 +61,30 @@ void main() {
     expect(_redPixelsBgra(bgra), greaterThan(200));
   });
 
+  test('applies image XObject soft masks', () {
+    final bgra = _renderBgra(
+      imageXObjectPdf(
+        '<< /Type /XObject /Subtype /Image /Width 2 /Height 2 '
+        '/ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 6 0 R '
+        '/Length 12 >>',
+        <int>[
+          255, 0, 0, 255, 0, 0, //
+          255, 0, 0, 255, 0, 0,
+        ],
+        extraObjects: const [
+          TestPdfStreamObject(
+            6,
+            '<< /Type /XObject /Subtype /Image /Width 2 /Height 2 '
+            '/ColorSpace /DeviceGray /BitsPerComponent 8 /Length 4 >>',
+            <int>[255, 0, 255, 0],
+          ),
+        ],
+      ),
+    );
+    expect(_redPixelsBgra(bgra), inInclusiveRange(64, 160));
+    expect(_whitePixelsBgra(bgra), inInclusiveRange(64, 160));
+  });
+
   test('renders a named DeviceCMYK image color space', () {
     final bgra = _renderBgra(
       imageXObjectPdf(
@@ -167,4 +191,15 @@ int _processCyanPixelsBgra(List<int> bgra) {
     if (r < 25 && g > 170 && g < 205 && b > 220 && b < 245) cyan++;
   }
   return cyan;
+}
+
+int _whitePixelsBgra(List<int> bgra) {
+  var white = 0;
+  for (var i = 0; i < bgra.length; i += 4) {
+    final b = bgra[i];
+    final g = bgra[i + 1];
+    final r = bgra[i + 2];
+    if (r > 230 && g > 230 && b > 230) white++;
+  }
+  return white;
 }
