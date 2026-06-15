@@ -1,3 +1,4 @@
+import 'package:pdf_document/pdf_document.dart';
 import 'package:pdf_graphics/pdf_graphics.dart';
 
 /// A replay target for recorded PDF display commands.
@@ -45,6 +46,19 @@ abstract class PdfDisplayCommandDevice {
 
   /// Ends the current transparency group.
   void endGroup();
+
+  /// Begins recording drawing commands that are affected by a soft mask.
+  void beginSoftMasked();
+
+  /// Ends the current soft-masked drawing section.
+  void endSoftMasked({
+    required bool luminosity,
+    required PdfRect backdrop,
+    required void Function() drawMask,
+    double backdropLuminance = 0,
+    double transferScale = 1,
+    double transferOffset = 0,
+  });
 }
 
 /// A recorded rendering command for a PDF page.
@@ -255,6 +269,62 @@ class PdfEndGroupCommand extends PdfDisplayCommand {
 
   @override
   void replay(PdfDisplayCommandDevice device) => device.endGroup();
+}
+
+/// A command that begins a soft-masked drawing section.
+class PdfBeginSoftMaskCommand extends PdfDisplayCommand {
+  /// Creates a begin-soft-mask command.
+  const PdfBeginSoftMaskCommand();
+
+  @override
+  void replay(PdfDisplayCommandDevice device) => device.beginSoftMasked();
+}
+
+/// A command that ends a soft-masked drawing section.
+class PdfEndSoftMaskCommand extends PdfDisplayCommand {
+  /// Creates an end-soft-mask command.
+  const PdfEndSoftMaskCommand({
+    required this.luminosity,
+    required this.backdrop,
+    required this.maskCommands,
+    this.backdropLuminance = 0,
+    this.transferScale = 1,
+    this.transferOffset = 0,
+  });
+
+  /// Whether the mask alpha is derived from rendered luminance.
+  final bool luminosity;
+
+  /// The backdrop rectangle used by the soft mask.
+  final PdfRect backdrop;
+
+  /// The commands that render the mask shape.
+  final List<PdfDisplayCommand> maskCommands;
+
+  /// The fallback luminance for unpainted mask pixels.
+  final double backdropLuminance;
+
+  /// The linear transfer scale applied to mask values.
+  final double transferScale;
+
+  /// The linear transfer offset applied to mask values.
+  final double transferOffset;
+
+  @override
+  void replay(PdfDisplayCommandDevice device) {
+    device.endSoftMasked(
+      luminosity: luminosity,
+      backdrop: backdrop,
+      backdropLuminance: backdropLuminance,
+      transferScale: transferScale,
+      transferOffset: transferOffset,
+      drawMask: () {
+        for (final command in maskCommands) {
+          command.replay(device);
+        }
+      },
+    );
+  }
 }
 
 /// A rectangle in display-list coordinate space.

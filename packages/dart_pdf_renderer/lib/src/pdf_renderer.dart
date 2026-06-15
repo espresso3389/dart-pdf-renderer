@@ -407,22 +407,28 @@ class _RecordingPdfDevice implements PdfDevice {
   final PdfMatrix transform;
   final Map<cos.CosStream, _ImageColorContext> imageColorContexts;
   final _ImageColorContext documentImageColorContext;
-  final commands = <PdfDisplayCommand>[];
+  final _commandStack = <List<PdfDisplayCommand>>[<PdfDisplayCommand>[]];
+
+  List<PdfDisplayCommand> get commands => _commandStack.first;
+
+  void _addCommand(PdfDisplayCommand command) {
+    _commandStack.last.add(command);
+  }
 
   @override
   void save() {
-    commands.add(const PdfSaveCommand());
+    _addCommand(const PdfSaveCommand());
   }
 
   @override
   void restore() {
-    commands.add(const PdfRestoreCommand());
+    _addCommand(const PdfRestoreCommand());
   }
 
   @override
   void fillPath(PdfPath path, PdfColor color, PdfFillRule rule, double alpha) {
     final transformed = _transformPath(path, transform);
-    commands.add(
+    _addCommand(
       PdfFillPathCommand(
         transformed,
         color,
@@ -441,11 +447,11 @@ class _RecordingPdfDevice implements PdfDevice {
     double alpha,
   ) {
     final transformed = _transformPath(path, transform);
-    commands.add(
+    _addCommand(
       PdfFillPathGradientCommand(
         transformed,
         rule,
-        gradient,
+        _transformGradient(gradient, transform),
         alpha,
         _pathBounds(transformed),
       ),
@@ -455,7 +461,7 @@ class _RecordingPdfDevice implements PdfDevice {
   @override
   void fillMesh(PdfMesh mesh, double alpha) {
     final transformed = _transformMesh(mesh, transform);
-    commands.add(
+    _addCommand(
       PdfFillMeshCommand(transformed, alpha, _meshBounds(transformed)),
     );
   }
@@ -469,7 +475,7 @@ class _RecordingPdfDevice implements PdfDevice {
   ) {
     final transformed = _transformPath(path, transform);
     final bounds = _pathBounds(transformed)?.inflate(stroke.width / 2 + 1);
-    commands.add(
+    _addCommand(
       PdfStrokePathCommand(
         transformed,
         color,
@@ -482,17 +488,17 @@ class _RecordingPdfDevice implements PdfDevice {
 
   @override
   void clipPath(PdfPath path, PdfFillRule rule) {
-    commands.add(PdfClipPathCommand(_transformPath(path, transform), rule));
+    _addCommand(PdfClipPathCommand(_transformPath(path, transform), rule));
   }
 
   @override
   void drawText(PdfTextRun run) {
     final transformed = _transformTextRun(run, transform);
     if (run.invisible) {
-      commands.add(PdfDrawTextCommand(transformed, null));
+      _addCommand(PdfDrawTextCommand(transformed, null));
       return;
     }
-    commands.add(
+    _addCommand(
       PdfDrawTextCommand(transformed, _textRunBounds(transformed)?.inflate(2)),
     );
   }
@@ -506,7 +512,7 @@ class _RecordingPdfDevice implements PdfDevice {
       ),
       transform,
     );
-    commands.add(
+    _addCommand(
       PdfDrawImageCommand(
         transformed,
         _imageRequestBounds(transformed.request),
@@ -516,21 +522,23 @@ class _RecordingPdfDevice implements PdfDevice {
 
   @override
   void setBlendMode(PdfBlendMode mode) {
-    commands.add(PdfSetBlendModeCommand(mode));
+    _addCommand(PdfSetBlendModeCommand(mode));
   }
 
   @override
   void beginGroup(double alpha, {bool knockout = false}) {
-    commands.add(PdfBeginGroupCommand(alpha, knockout: knockout));
+    _addCommand(PdfBeginGroupCommand(alpha, knockout: knockout));
   }
 
   @override
   void endGroup() {
-    commands.add(const PdfEndGroupCommand());
+    _addCommand(const PdfEndGroupCommand());
   }
 
   @override
-  void beginSoftMasked() {}
+  void beginSoftMasked() {
+    _addCommand(const PdfBeginSoftMaskCommand());
+  }
 
   @override
   void endSoftMasked({
@@ -541,7 +549,21 @@ class _RecordingPdfDevice implements PdfDevice {
     double transferScale = 1,
     double transferOffset = 0,
   }) {
+    _commandStack.add(<PdfDisplayCommand>[]);
     drawMask();
+    final maskCommands = List<PdfDisplayCommand>.unmodifiable(
+      _commandStack.removeLast(),
+    );
+    _addCommand(
+      PdfEndSoftMaskCommand(
+        luminosity: luminosity,
+        backdrop: _transformRect(backdrop, transform),
+        maskCommands: maskCommands,
+        backdropLuminance: backdropLuminance,
+        transferScale: transferScale,
+        transferOffset: transferOffset,
+      ),
+    );
   }
 }
 
@@ -1052,6 +1074,108 @@ PdfMesh _transformMesh(PdfMesh mesh, PdfMatrix transform) => PdfMesh([
     ),
 ], mesh.triangles);
 
+PdfGradient _transformGradient(PdfGradient gradient, PdfMatrix transform) =>
+    PdfGradient(
+      isRadial: gradient.isRadial,
+      coords: gradient.coords,
+      colors: gradient.colors,
+      stops: gradient.stops,
+      transform: gradient.transform.concat(transform),
+      extendStart: gradient.extendStart,
+      extendEnd: gradient.extendEnd,
+    );
+
+PdfRect _transformRect(PdfRect rect, PdfMatrix transform) {
+  final points = [
+    _Point(
+      transform.transformX(rect.left, rect.top),
+      transform.transformY(rect.left, rect.top),
+    ),
+    _Point(
+      transform.transformX(rect.right, rect.top),
+      transform.transformY(rect.right, rect.top),
+    ),
+    _Point(
+      transform.transformX(rect.right, rect.bottom),
+      transform.transformY(rect.right, rect.bottom),
+    ),
+    _Point(
+      transform.transformX(rect.left, rect.bottom),
+      transform.transformY(rect.left, rect.bottom),
+    ),
+  ];
+  var left = double.infinity;
+  var top = double.infinity;
+  var right = double.negativeInfinity;
+  var bottom = double.negativeInfinity;
+  for (final point in points) {
+    left = math.min(left, point.x);
+    top = math.min(top, point.y);
+    right = math.max(right, point.x);
+    bottom = math.max(bottom, point.y);
+  }
+  return PdfRect(left, top, right, bottom);
+}
+
+PdfColor? _axialGradientColorAt(PdfGradient gradient, double x, double y) {
+  final coords = gradient.coords;
+  final matrix = gradient.transform;
+  final x0 = matrix.transformX(coords[0], coords[1]);
+  final y0 = matrix.transformY(coords[0], coords[1]);
+  final x1 = matrix.transformX(coords[2], coords[3]);
+  final y1 = matrix.transformY(coords[2], coords[3]);
+  final dx = x1 - x0;
+  final dy = y1 - y0;
+  final lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared <= 1e-12) {
+    return gradient.colors.isEmpty ? null : gradient.colors.last;
+  }
+  var t = ((x - x0) * dx + (y - y0) * dy) / lengthSquared;
+  if (t < 0) {
+    if (!gradient.extendStart) return null;
+    t = 0;
+  } else if (t > 1) {
+    if (!gradient.extendEnd) return null;
+    t = 1;
+  }
+  return _interpolateGradientColor(gradient, t);
+}
+
+PdfColor? _interpolateGradientColor(PdfGradient gradient, double t) {
+  final colors = gradient.colors;
+  if (colors.isEmpty) return null;
+  if (colors.length == 1) return colors.first;
+  final stops = gradient.stops;
+  if (stops.length != colors.length) {
+    final scaled = t.clamp(0.0, 1.0) * (colors.length - 1);
+    final index = scaled.floor().clamp(0, colors.length - 2);
+    return _lerpColor(colors[index], colors[index + 1], scaled - index);
+  }
+  if (t <= stops.first) return colors.first;
+  for (var i = 1; i < stops.length; i++) {
+    final stop = stops[i];
+    if (t <= stop) {
+      final previous = stops[i - 1];
+      final span = stop - previous;
+      final local = span.abs() <= 1e-12 ? 0.0 : (t - previous) / span;
+      return _lerpColor(colors[i - 1], colors[i], local);
+    }
+  }
+  return colors.last;
+}
+
+PdfColor _lerpColor(PdfColor a, PdfColor b, double t) {
+  final local = t.clamp(0.0, 1.0);
+  return PdfColor(
+    a.red + (b.red - a.red) * local,
+    a.green + (b.green - a.green) * local,
+    a.blue + (b.blue - a.blue) * local,
+  );
+}
+
+double _luminance(int r, int g, int b) =>
+    (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
+
 PdfDisplayRect? _pathBounds(PdfPath path) {
   final points = <_Point>[];
   for (final segment in path.segments) {
@@ -1277,7 +1401,10 @@ class PdfRenderTiming {
         drawTextMicroseconds += microseconds;
       case PdfDrawImageCommand():
         drawImageMicroseconds += microseconds;
-      case PdfBeginGroupCommand() || PdfEndGroupCommand():
+      case PdfBeginGroupCommand() ||
+          PdfEndGroupCommand() ||
+          PdfBeginSoftMaskCommand() ||
+          PdfEndSoftMaskCommand():
         groupMicroseconds += microseconds;
       default:
         otherCommandMicroseconds += microseconds;
@@ -1436,13 +1563,11 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     PdfGradient gradient,
     double alpha,
   ) {
-    _fillPath(
-      path,
-      gradient.averageColor,
+    _fillPathGradient(
+      _transformPath(path, _transform),
       rule,
+      _transformGradient(gradient, _transform),
       alpha,
-      operation: 'fillPathGradient',
-      details: 'alpha=${_f(alpha)} rule=${rule.name}',
     );
   }
 
@@ -1804,6 +1929,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   @override
   void beginSoftMasked() {
     _trace('beginSoftMasked', _clip.bounds);
+    _surfaceStack.add(_RgbaSurface(_surface.width, _surface.height));
   }
 
   @override
@@ -1822,7 +1948,69 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
           'transferScale=${_f(transferScale)} '
           'transferOffset=${_f(transferOffset)}',
     );
+    if (_surfaceStack.length <= 1) {
+      return;
+    }
+    final content = _surfaceStack.removeLast();
+    final mask = _RgbaSurface(_surface.width, _surface.height);
+    _surfaceStack.add(mask);
     drawMask();
+    _surfaceStack.removeLast();
+    _compositeSoftMaskedContent(
+      content,
+      mask,
+      luminosity: luminosity,
+      backdropLuminance: backdropLuminance,
+      transferScale: transferScale,
+      transferOffset: transferOffset,
+    );
+  }
+
+  void _compositeSoftMaskedContent(
+    _RgbaSurface content,
+    _RgbaSurface mask, {
+    required bool luminosity,
+    required double backdropLuminance,
+    required double transferScale,
+    required double transferOffset,
+  }) {
+    final dirtyBounds = content.dirtyBounds;
+    if (dirtyBounds == null || dirtyBounds.isEmpty) return;
+    final parent = _surface;
+    final contentPixels = content.pixels;
+    final maskPixels = mask.pixels;
+    final backdrop = backdropLuminance.clamp(0.0, 1.0);
+    for (var y = dirtyBounds.top; y < dirtyBounds.bottom; y++) {
+      for (var x = dirtyBounds.left; x < dirtyBounds.right; x++) {
+        final offset = (y * content.width + x) * 4;
+        final contentAlpha = contentPixels[offset + 3];
+        if (contentAlpha == 0) continue;
+        final maskAlpha = maskPixels[offset + 3] / 255.0;
+        final rawMask = luminosity
+            ? backdrop * (1 - maskAlpha) +
+                  _luminance(
+                        maskPixels[offset],
+                        maskPixels[offset + 1],
+                        maskPixels[offset + 2],
+                      ) *
+                      maskAlpha
+            : maskAlpha;
+        final transferred = (rawMask * transferScale + transferOffset).clamp(
+          0.0,
+          1.0,
+        );
+        final alpha = (contentAlpha * transferred).round();
+        if (alpha == 0) continue;
+        parent.blendPixel(
+          x,
+          y,
+          contentPixels[offset],
+          contentPixels[offset + 1],
+          contentPixels[offset + 2],
+          alpha,
+        );
+      }
+    }
   }
 
   void _fillPath(
@@ -1925,6 +2113,112 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
               (b * coverageAlpha + dstPixels[dstOffset + 2] * inv) ~/ 255;
           if (coverageAlpha > dstPixels[dstOffset + 3]) {
             dstPixels[dstOffset + 3] = coverageAlpha;
+          }
+        }
+        maskOffset++;
+        dstOffset += 4;
+      }
+    }
+  }
+
+  void _fillPathGradient(
+    PdfPath path,
+    PdfFillRule rule,
+    PdfGradient gradient,
+    double alpha,
+  ) {
+    if (gradient.isRadial || gradient.coords.length < 4) {
+      _fillPath(
+        path,
+        gradient.averageColor,
+        rule,
+        alpha,
+        operation: 'fillPathGradient',
+        details: 'alpha=${_f(alpha)} rule=${rule.name} fallback=averageColor',
+      );
+      return;
+    }
+
+    final contours = _flatten(path, transform: PdfMatrix.identity);
+    if (contours.isEmpty) return;
+    final bounds = _boundsOf(contours)?.intersect(_clip.bounds);
+    if (bounds == null || bounds.isEmpty) return;
+    _trace(
+      'fillPathGradient',
+      bounds,
+      'alpha=${_f(alpha)} rule=${rule.name} type=axial '
+          'coords=${gradient.coords.map(_f).join(',')} '
+          'line=${_gradientLineDetails(gradient)} '
+          'c0=${_colorDetails(gradient.colors.first, 1)} '
+          'cN=${_colorDetails(gradient.colors.last, 1)} '
+          'clip=${_clip.bounds}',
+    );
+
+    final a = (alpha.clamp(0, 1) * 255).round();
+    if (a <= 0) return;
+    final mask = _buildFillCoverageMask(bounds, contours, rule);
+    final dstPixels = _surface.pixels;
+    final dstWidth = _surface.width;
+    _surface.markDirty(bounds);
+    final maskValues = mask._values;
+    final maskBoundary = mask._boundary;
+    final maskWidth = mask.width;
+    final maskOriginX = mask.originX;
+    final maskOriginY = mask.originY;
+    final opaque = a >= 255;
+
+    for (var py = bounds.top; py < bounds.bottom; py++) {
+      var maskOffset =
+          (py - maskOriginY) * maskWidth + bounds.left - maskOriginX;
+      var dstOffset = (py * dstWidth + bounds.left) * 4;
+      for (var px = bounds.left; px < bounds.right; px++) {
+        if (maskBoundary[maskOffset] == 0) {
+          if (maskValues[maskOffset] != 0) {
+            final color = _axialGradientColorAt(gradient, px + 0.5, py + 0.5);
+            if (color != null) {
+              final r = (color.red.clamp(0, 1) * 255).round();
+              final g = (color.green.clamp(0, 1) * 255).round();
+              final b = (color.blue.clamp(0, 1) * 255).round();
+              if (opaque) {
+                dstPixels[dstOffset] = r;
+                dstPixels[dstOffset + 1] = g;
+                dstPixels[dstOffset + 2] = b;
+                dstPixels[dstOffset + 3] = 255;
+              } else {
+                final inv = 255 - a;
+                dstPixels[dstOffset] =
+                    (r * a + dstPixels[dstOffset] * inv) ~/ 255;
+                dstPixels[dstOffset + 1] =
+                    (g * a + dstPixels[dstOffset + 1] * inv) ~/ 255;
+                dstPixels[dstOffset + 2] =
+                    (b * a + dstPixels[dstOffset + 2] * inv) ~/ 255;
+                if (a > dstPixels[dstOffset + 3]) dstPixels[dstOffset + 3] = a;
+              }
+            }
+          }
+          maskOffset++;
+          dstOffset += 4;
+          continue;
+        }
+        final coveredSamples = _fillCoverageSamples(px, py, contours, rule);
+        if (coveredSamples != 0) {
+          final color = _axialGradientColorAt(gradient, px + 0.5, py + 0.5);
+          if (color != null) {
+            final coverageAlpha = (a * coveredSamples * _antiAliasSampleScale)
+                .round();
+            final inv = 255 - coverageAlpha;
+            final r = (color.red.clamp(0, 1) * 255).round();
+            final g = (color.green.clamp(0, 1) * 255).round();
+            final b = (color.blue.clamp(0, 1) * 255).round();
+            dstPixels[dstOffset] =
+                (r * coverageAlpha + dstPixels[dstOffset] * inv) ~/ 255;
+            dstPixels[dstOffset + 1] =
+                (g * coverageAlpha + dstPixels[dstOffset + 1] * inv) ~/ 255;
+            dstPixels[dstOffset + 2] =
+                (b * coverageAlpha + dstPixels[dstOffset + 2] * inv) ~/ 255;
+            if (coverageAlpha > dstPixels[dstOffset + 3]) {
+              dstPixels[dstOffset + 3] = coverageAlpha;
+            }
           }
         }
         maskOffset++;
@@ -2159,6 +2453,17 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   String _colorDetails(PdfColor color, double alpha) =>
       'rgb=${_f(color.red)},${_f(color.green)},${_f(color.blue)} '
       'alpha=${_f(alpha)}';
+
+  String _gradientLineDetails(PdfGradient gradient) {
+    final coords = gradient.coords;
+    if (coords.length < 4) return '(none)';
+    final matrix = gradient.transform;
+    final x0 = matrix.transformX(coords[0], coords[1]);
+    final y0 = matrix.transformY(coords[0], coords[1]);
+    final x1 = matrix.transformX(coords[2], coords[3]);
+    final y1 = matrix.transformY(coords[2], coords[3]);
+    return '${_f(x0)},${_f(y0)}->${_f(x1)},${_f(y1)}';
+  }
 
   String _f(double value) => value.toStringAsFixed(3);
 
