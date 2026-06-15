@@ -8,6 +8,8 @@ import 'package:pdf_document/pdf_document.dart' as dart_pdf;
 import 'package:pdf_graphics/pdf_graphics.dart' as pdf_graphics;
 import 'package:pdfrx_engine/pdfrx_engine.dart' as pdfrx;
 
+const _maxDownscaledImagePixels = 1500000;
+
 /// Installs the dart-pdf backed implementation as pdfrx's active backend.
 void installPdfrxDartPdfBackend() {
   pdfrx.PdfrxEntryFunctions.instance = PdfrxDartPdfEntryFunctions();
@@ -68,6 +70,7 @@ class PdfrxDartPdfEntryFunctions implements pdfrx.PdfrxEntryFunctions {
     final asyncRenderer = await PdfPageAsyncRenderer.create(
       originalBytes,
       password: opened.password,
+      maxDownscaledImagePixels: _maxDownscaledImagePixels,
     );
     return _DartPdfDocument(
       opened.document,

@@ -15,6 +15,9 @@ options:
                       normalized page region (default: 0,0,1,1)
   --fresh <n>         fresh renderer trials for first page render (default: 5)
   --hot <n>           repeated render trials after cache warmup (default: 10)
+  --max-downscaled-image-pixels <n>
+                      cache decoded images above this area as downscaled images
+                      (default: off)
   --annotations       render annotations (default: false)
 ''';
 
@@ -52,7 +55,8 @@ void main(List<String> args) {
     'page=${options.pageNumber} region=${request.x.toStringAsFixed(1)},'
     '${request.y.toStringAsFixed(1)} ${request.width}x${request.height} '
     'scale=${options.scale.toStringAsFixed(3)} '
-    'annotations=${options.annotations}',
+    'annotations=${options.annotations} '
+    'maxDownscaledImagePixels=${options.maxDownscaledImagePixels ?? 'off'}',
   );
   stdout.writeln('read: ${readWatch.elapsedMilliseconds} ms');
   stdout.writeln('open: ${openWatch.elapsedMilliseconds} ms');
@@ -60,14 +64,14 @@ void main(List<String> args) {
   final fresh = _TimingSamples();
   var checksum = 0;
   for (var i = 0; i < options.freshTrials; i++) {
-    final renderer = PdfPageRenderer(document);
+    final renderer = _renderer(document, options);
     final result = _timeRender(renderer, request, options);
     fresh.add(result);
     checksum ^= result.checksum;
   }
   fresh.print('fresh-renderer first render');
 
-  final hotRenderer = PdfPageRenderer(document);
+  final hotRenderer = _renderer(document, options);
   final warmup = _timeRender(hotRenderer, request, options);
   checksum ^= warmup.checksum;
   stdout.writeln('hot warmup: ${warmup.summary}');
@@ -81,6 +85,14 @@ void main(List<String> args) {
   hot.print('hot same-page render');
   stdout.writeln('checksum: $checksum');
 }
+
+PdfPageRenderer _renderer(PdfDocument document, _Options options) =>
+    PdfPageRenderer(
+      document,
+      imageDecodeCache: PdfImageDecodeCache(
+        maxDownscaledImagePixels: options.maxDownscaledImagePixels,
+      ),
+    );
 
 _RenderResult _timeRender(
   PdfPageRenderer renderer,
@@ -330,6 +342,7 @@ class _Options {
     required this.region,
     required this.freshTrials,
     required this.hotTrials,
+    required this.maxDownscaledImagePixels,
     required this.annotations,
   });
 
@@ -338,6 +351,7 @@ class _Options {
   final List<double> region;
   final int freshTrials;
   final int hotTrials;
+  final int? maxDownscaledImagePixels;
   final bool annotations;
 
   static _Options? parse(List<String> args) {
@@ -346,6 +360,7 @@ class _Options {
     var region = const [0.0, 0.0, 1.0, 1.0];
     var freshTrials = 5;
     var hotTrials = 10;
+    int? maxDownscaledImagePixels;
     var annotations = false;
 
     for (var i = 0; i < args.length; i++) {
@@ -363,6 +378,8 @@ class _Options {
           freshTrials = int.parse(args[++i]);
         case '--hot':
           hotTrials = int.parse(args[++i]);
+        case '--max-downscaled-image-pixels':
+          maxDownscaledImagePixels = int.parse(args[++i]);
         case '--annotations':
           annotations = true;
         default:
@@ -370,7 +387,11 @@ class _Options {
       }
     }
 
-    if (pageNumber < 1 || scale <= 0 || freshTrials < 0 || hotTrials < 0) {
+    if (pageNumber < 1 ||
+        scale <= 0 ||
+        freshTrials < 0 ||
+        hotTrials < 0 ||
+        (maxDownscaledImagePixels != null && maxDownscaledImagePixels <= 0)) {
       return null;
     }
     if (region[0] < 0 ||
@@ -388,6 +409,7 @@ class _Options {
       region: region,
       freshTrials: freshTrials,
       hotTrials: hotTrials,
+      maxDownscaledImagePixels: maxDownscaledImagePixels,
       annotations: annotations,
     );
   }

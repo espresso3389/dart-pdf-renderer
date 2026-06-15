@@ -21,6 +21,27 @@ void main() {
     expect(_redPixelsBgra(bgra), greaterThan(200));
   });
 
+  test('can cache large images as downscaled decoded images', () {
+    final cache = PdfImageDecodeCache(maxDownscaledImagePixels: 4);
+    final imageBytes = List<int>.filled(8 * 8 * 3, 0);
+    for (var i = 0; i < imageBytes.length; i += 3) {
+      imageBytes[i] = 255;
+    }
+    final bgra = _renderBgra(
+      imageXObjectPdf(
+        '<< /Type /XObject /Subtype /Image /Width 8 /Height 8 '
+        '/ColorSpace /DeviceRGB /BitsPerComponent 8 '
+        '/Length ${imageBytes.length} >>',
+        imageBytes,
+      ),
+      imageDecodeCache: cache,
+    );
+
+    expect(_redPixelsBgra(bgra), greaterThan(200));
+    expect(cache.entryCount, 1);
+    expect(cache.byteCount, 16);
+  });
+
   test('renders a DeviceCMYK image XObject', () {
     final bgra = _renderBgra(
       imageXObjectPdf(
@@ -157,9 +178,12 @@ void main() {
   });
 }
 
-Uint8List _renderBgra(Uint8List pdf) {
+Uint8List _renderBgra(Uint8List pdf, {PdfImageDecodeCache? imageDecodeCache}) {
   final document = PdfDocument.open(pdf, password: '');
-  final renderer = PdfPageRenderer(document);
+  final renderer = PdfPageRenderer(
+    document,
+    imageDecodeCache: imageDecodeCache,
+  );
   return renderer.renderBgraRegion(
     pageNumber: 1,
     x: 0,
