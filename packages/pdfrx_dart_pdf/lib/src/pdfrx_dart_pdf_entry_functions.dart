@@ -9,6 +9,21 @@ import 'package:pdf_graphics/pdf_graphics.dart' as pdf_graphics;
 import 'package:pdfrx_engine/pdfrx_engine.dart' as pdfrx;
 
 const _maxDownscaledImagePixels = 1500000;
+Future<PdfPageAsyncRendererWorker>? _sharedAsyncWorker;
+
+Future<PdfPageAsyncRendererWorker> _getSharedAsyncWorker() {
+  final existing = _sharedAsyncWorker;
+  if (existing != null) return existing;
+  return _sharedAsyncWorker = PdfPageAsyncRendererWorker.create();
+}
+
+Future<void> _stopSharedAsyncWorker() async {
+  final worker = _sharedAsyncWorker;
+  _sharedAsyncWorker = null;
+  if (worker != null) {
+    await (await worker).dispose();
+  }
+}
 
 /// Installs the dart-pdf backed implementation as pdfrx's active backend.
 void installPdfrxDartPdfBackend() {
@@ -37,7 +52,7 @@ class PdfrxDartPdfEntryFunctions implements pdfrx.PdfrxEntryFunctions {
   ) async => callback(message);
 
   @override
-  Future<void> stopBackgroundWorker() async {}
+  Future<void> stopBackgroundWorker() => _stopSharedAsyncWorker();
 
   @override
   Future<pdfrx.PdfDocument> openAsset(
@@ -67,7 +82,8 @@ class PdfrxDartPdfEntryFunctions implements pdfrx.PdfrxEntryFunctions {
       firstAttemptByEmptyPassword: firstAttemptByEmptyPassword,
     );
     final originalBytes = Uint8List.fromList(data);
-    final asyncRenderer = await PdfPageAsyncRenderer.create(
+    final worker = await _getSharedAsyncWorker();
+    final asyncRenderer = await worker.openData(
       originalBytes,
       password: opened.password,
       maxDownscaledImagePixels: _maxDownscaledImagePixels,

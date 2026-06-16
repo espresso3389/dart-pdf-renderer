@@ -7,8 +7,9 @@ import 'support/render_test_pdf.dart';
 
 void main() {
   test('render with an uncancelled token returns image pixels', () async {
-    final renderer = await PdfPageAsyncRenderer.create(_testPdf());
+    final worker = await PdfPageAsyncRendererWorker.create();
     try {
+      final renderer = await worker.openData(_testPdf());
       final token = renderer.createCancellationToken();
       final bgra = await _render(renderer, cancellationToken: token);
 
@@ -16,25 +17,27 @@ void main() {
       expect(bgra, isNotNull);
       expect(_nonWhitePixelsBgra(bgra!), greaterThan(0));
     } finally {
-      await renderer.dispose();
+      await worker.dispose();
     }
   });
 
   test('render with an already cancelled token returns null', () async {
-    final renderer = await PdfPageAsyncRenderer.create(_testPdf());
+    final worker = await PdfPageAsyncRendererWorker.create();
     try {
+      final renderer = await worker.openData(_testPdf());
       final token = renderer.createCancellationToken()..cancel();
       final bgra = await _render(renderer, cancellationToken: token);
 
       expect(bgra, isNull);
     } finally {
-      await renderer.dispose();
+      await worker.dispose();
     }
   });
 
   test('render cancelled after queueing returns null', () async {
-    final renderer = await PdfPageAsyncRenderer.create(_testPdf());
+    final worker = await PdfPageAsyncRendererWorker.create();
     try {
+      final renderer = await worker.openData(_testPdf());
       final blocker = renderer.renderBgraRegion(
         pageNumber: 1,
         x: 0,
@@ -54,7 +57,39 @@ void main() {
       expect(token.isCancelled, isTrue);
       expect(bgra, isNull);
     } finally {
-      await renderer.dispose();
+      await worker.dispose();
+    }
+  });
+
+  test('one worker can render multiple documents', () async {
+    final worker = await PdfPageAsyncRendererWorker.create();
+    try {
+      final first = await worker.openData(_testPdf());
+      final second = await worker.openData(_testPdf());
+
+      final firstBgra = await _render(first);
+      final secondBgra = await _render(second);
+
+      expect(_nonWhitePixelsBgra(firstBgra!), greaterThan(0));
+      expect(_nonWhitePixelsBgra(secondBgra!), greaterThan(0));
+    } finally {
+      await worker.dispose();
+    }
+  });
+
+  test('rejects a cancellation token from another renderer', () async {
+    final worker = await PdfPageAsyncRendererWorker.create();
+    try {
+      final first = await worker.openData(_testPdf());
+      final second = await worker.openData(_testPdf());
+      final token = first.createCancellationToken();
+
+      await expectLater(
+        _render(second, cancellationToken: token),
+        throwsArgumentError,
+      );
+    } finally {
+      await worker.dispose();
     }
   });
 }

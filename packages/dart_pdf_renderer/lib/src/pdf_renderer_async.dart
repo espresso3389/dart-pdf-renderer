@@ -10,53 +10,23 @@ import 'pdf_renderer.dart';
 
 /// An isolate-backed asynchronous PDF page renderer.
 class PdfPageAsyncRenderer {
-  PdfPageAsyncRenderer._(this._isolate, this._sendPort, this.pageSizes);
+  PdfPageAsyncRenderer._(this._worker, this._rendererId, this.pageSizes);
 
-  final Isolate _isolate;
-  final SendPort _sendPort;
+  final PdfPageAsyncRendererWorker _worker;
+  final _PdfRendererId _rendererId;
 
   /// The page sizes in display coordinate order.
   final List<PdfPageSize> pageSizes;
   var _nextCancellationTokenId = 0;
   bool _disposed = false;
 
-  /// Creates an asynchronous renderer from PDF [documentBytes].
-  static Future<PdfPageAsyncRenderer> create(
-    Uint8List documentBytes, {
-    String password = '',
-    int? maxDownscaledImagePixels,
-  }) async {
-    final readyPort = ReceivePort();
-    final isolate = await Isolate.spawn(
-      _workerMain,
-      _PdfRendererWorkerInit(
-        readyPort.sendPort,
-        TransferableTypedData.fromList([documentBytes]),
-        password,
-        maxDownscaledImagePixels,
-      ),
-    );
-
-    final ready = await readyPort.first;
-    readyPort.close();
-    if (ready is _PdfRendererWorkerReady) {
-      final renderer = PdfPageAsyncRenderer._(
-        isolate,
-        ready.sendPort,
-        ready.pageSizes,
-      );
-      return renderer;
-    }
-    isolate.kill(priority: Isolate.immediate);
-    if (ready is _PdfRendererWorkerError) {
-      throw StateError('${ready.error}\n${ready.stackTrace}');
-    }
-    throw StateError('Unexpected renderer worker initialization response.');
-  }
-
   /// Creates a cancellation token for a future render request.
   PdfRenderCancellationToken createCancellationToken() =>
-      PdfRenderCancellationToken._(_sendPort, _nextCancellationTokenId++);
+      PdfRenderCancellationToken._(
+        _worker._sendPort,
+        _rendererId,
+        _nextCancellationTokenId++,
+      );
 
   /// Renders a page region to BGRA pixels on the worker isolate.
   ///
@@ -76,9 +46,19 @@ class PdfPageAsyncRenderer {
     if (_disposed) {
       throw StateError('PdfPageAsyncRenderer is disposed.');
     }
+    if (cancellationToken != null &&
+        (cancellationToken._sendPort != _worker._sendPort ||
+            cancellationToken._rendererId != _rendererId)) {
+      throw ArgumentError.value(
+        cancellationToken,
+        'cancellationToken',
+        'Cancellation token was created by a different renderer.',
+      );
+    }
     if (cancellationToken?.isCancelled ?? false) return null;
-    final data =
-        await _compute<_PdfRendererRenderParams, TransferableTypedData>(
+    final data = await _worker
+        ._compute<_PdfRendererRenderParams, TransferableTypedData>(
+          _rendererId,
           (renderer, params) {
             final bgra = _debugTimeSync(
               'renderBgraRegion '
@@ -115,13 +95,84 @@ class PdfPageAsyncRenderer {
     return data?.materialize().asUint8List();
   }
 
+  /// Releases this document renderer from its worker.
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    await _worker._disposeRenderer(_rendererId);
+  }
+}
+
+/// A shared isolate-backed renderer worker that can host multiple documents.
+class PdfPageAsyncRendererWorker {
+  PdfPageAsyncRendererWorker._(this._isolate, this._sendPort);
+
+  final Isolate _isolate;
+  final SendPort _sendPort;
+  bool _disposed = false;
+
+  /// Starts a renderer worker isolate.
+  static Future<PdfPageAsyncRendererWorker> create() async {
+    final readyPort = ReceivePort();
+    final isolate = await Isolate.spawn(
+      _workerMain,
+      _PdfRendererWorkerInit(readyPort.sendPort),
+    );
+
+    final ready = await readyPort.first;
+    readyPort.close();
+    if (ready is _PdfRendererWorkerReady) {
+      return PdfPageAsyncRendererWorker._(isolate, ready.sendPort);
+    }
+    isolate.kill(priority: Isolate.immediate);
+    if (ready is _PdfRendererWorkerError) {
+      throw StateError('${ready.error}\n${ready.stackTrace}');
+    }
+    throw StateError('Unexpected renderer worker initialization response.');
+  }
+
+  /// Opens [documentBytes] in this worker and returns a document renderer.
+  Future<PdfPageAsyncRenderer> openData(
+    Uint8List documentBytes, {
+    String password = '',
+    int? maxDownscaledImagePixels,
+  }) async {
+    if (_disposed) {
+      throw StateError('PdfPageAsyncRendererWorker is disposed.');
+    }
+    final receivePort = ReceivePort();
+    try {
+      _sendPort.send(
+        _PdfRendererOpenRequest(
+          receivePort.sendPort,
+          TransferableTypedData.fromList([documentBytes]),
+          password,
+          maxDownscaledImagePixels,
+        ),
+      );
+      final response = await receivePort.first;
+      if (response is _PdfRendererCallError) {
+        throw StateError('${response.error}\n${response.stackTrace}');
+      }
+      response as _PdfRendererOpenResult;
+      return PdfPageAsyncRenderer._(
+        this,
+        response.rendererId,
+        response.pageSizes,
+      );
+    } finally {
+      receivePort.close();
+    }
+  }
+
   Future<R?> _compute<M, R>(
+    _PdfRendererId rendererId,
     _PdfRendererComputeCallback<M, R> callback,
     M message, {
     PdfRenderCancellationToken? cancellationToken,
   }) async {
     if (_disposed) {
-      throw StateError('PdfPageAsyncRenderer is disposed.');
+      throw StateError('PdfPageAsyncRendererWorker is disposed.');
     }
     if (cancellationToken?.isCancelled ?? false) return null;
 
@@ -130,6 +181,7 @@ class PdfPageAsyncRenderer {
       _sendPort.send(
         _PdfRendererComputeParams<M, R>(
           receivePort.sendPort,
+          rendererId,
           callback,
           message,
           cancellationTokenId: cancellationToken?._id,
@@ -147,7 +199,23 @@ class PdfPageAsyncRenderer {
     }
   }
 
-  /// Stops the worker isolate and releases renderer resources.
+  Future<void> _disposeRenderer(_PdfRendererId rendererId) async {
+    if (_disposed) return;
+    final receivePort = ReceivePort();
+    try {
+      _sendPort.send(
+        _PdfRendererDisposeRequest(receivePort.sendPort, rendererId),
+      );
+      final response = await receivePort.first;
+      if (response is _PdfRendererCallError) {
+        throw StateError('${response.error}\n${response.stackTrace}');
+      }
+    } finally {
+      receivePort.close();
+    }
+  }
+
+  /// Stops the worker isolate and releases all renderer resources.
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
@@ -167,15 +235,7 @@ class PdfPageAsyncRenderer {
   static void _workerMain(_PdfRendererWorkerInit init) {
     final commandPort = ReceivePort();
     try {
-      final bytes = init.documentBytes.materialize().asUint8List();
-      final document = PdfDocument.open(bytes, password: init.password);
-      final renderer = PdfPageRenderer(
-        document,
-        imageDecodeCache: PdfImageDecodeCache(
-          maxDownscaledImagePixels: init.maxDownscaledImagePixels,
-        ),
-      );
-      final state = _PdfRendererWorkerState(commandPort, renderer);
+      final state = _PdfRendererWorkerState(commandPort);
       final queue = Queue<_PdfRendererWorkerMessage>();
       var scheduled = false;
 
@@ -190,11 +250,9 @@ class PdfPageAsyncRenderer {
         });
       }
 
-      init.readyPort.send(
-        _PdfRendererWorkerReady(commandPort.sendPort, renderer.pageSizes),
-      );
+      init.readyPort.send(_PdfRendererWorkerReady(commandPort.sendPort));
       commandPort.listen((message) {
-        if (message is int) {
+        if (message is _PdfRendererCancelRequest) {
           queue.removeWhere((call) => call.cancelIfQueued(message));
           return;
         }
@@ -233,24 +291,15 @@ T _debugTimeSync<T>(String label, T Function() action) {
 }
 
 class _PdfRendererWorkerInit {
-  const _PdfRendererWorkerInit(
-    this.readyPort,
-    this.documentBytes,
-    this.password,
-    this.maxDownscaledImagePixels,
-  );
+  const _PdfRendererWorkerInit(this.readyPort);
 
   final SendPort readyPort;
-  final TransferableTypedData documentBytes;
-  final String password;
-  final int? maxDownscaledImagePixels;
 }
 
 class _PdfRendererWorkerReady {
-  const _PdfRendererWorkerReady(this.sendPort, this.pageSizes);
+  const _PdfRendererWorkerReady(this.sendPort);
 
   final SendPort sendPort;
-  final List<PdfPageSize> pageSizes;
 }
 
 class _PdfRendererWorkerError {
@@ -261,23 +310,46 @@ class _PdfRendererWorkerError {
 }
 
 class _PdfRendererWorkerState {
-  _PdfRendererWorkerState(this.receivePort, this.renderer);
+  _PdfRendererWorkerState(this.receivePort);
 
   final ReceivePort receivePort;
-  final PdfPageRenderer renderer;
+  final renderers = <_PdfRendererId, PdfPageRenderer>{};
+  final glyphRasterCache = PdfGlyphRasterCache();
+  var _nextRendererId = 0;
   var stopped = false;
+
+  _PdfRendererOpenResult open(
+    TransferableTypedData documentBytes,
+    String password,
+    int? maxDownscaledImagePixels,
+  ) {
+    final bytes = documentBytes.materialize().asUint8List();
+    final document = PdfDocument.open(bytes, password: password);
+    final renderer = PdfPageRenderer(
+      document,
+      glyphRasterCache: glyphRasterCache,
+      imageDecodeCache: PdfImageDecodeCache(
+        maxDownscaledImagePixels: maxDownscaledImagePixels,
+      ),
+    );
+    final id = _nextRendererId++;
+    renderers[id] = renderer;
+    return _PdfRendererOpenResult(id, renderer.pageSizes);
+  }
 
   void stop() {
     stopped = true;
+    renderers.clear();
     receivePort.close();
   }
 }
 
 /// Cancellation token for queued asynchronous render requests.
 class PdfRenderCancellationToken {
-  PdfRenderCancellationToken._(this._sendPort, this._id);
+  PdfRenderCancellationToken._(this._sendPort, this._rendererId, this._id);
 
   final SendPort _sendPort;
+  final _PdfRendererId _rendererId;
   final _PdfRendererCancellationTokenId _id;
   var _isCancelled = false;
   var _requestSent = false;
@@ -301,7 +373,7 @@ class PdfRenderCancellationToken {
   void _sendCancellationIfReady() {
     if (!_isCancelled || !_requestSent || _cancellationSent) return;
     _cancellationSent = true;
-    _sendPort.send(_id);
+    _sendPort.send(_PdfRendererCancelRequest(_rendererId, _id));
   }
 }
 
@@ -309,6 +381,7 @@ typedef _PdfRendererComputeCallback<M, R> =
     R Function(PdfPageRenderer renderer, M message);
 
 typedef _PdfRendererCancellationTokenId = int;
+typedef _PdfRendererId = int;
 
 typedef _PdfRendererRenderParams = ({
   bool annotations,
@@ -322,9 +395,14 @@ typedef _PdfRendererRenderParams = ({
 });
 
 abstract class _PdfRendererWorkerMessage<R> {
-  _PdfRendererWorkerMessage(this.sendPort, {this.cancellationTokenId});
+  _PdfRendererWorkerMessage(
+    this.sendPort,
+    this.rendererId, {
+    this.cancellationTokenId,
+  });
 
   final SendPort sendPort;
+  final _PdfRendererId? rendererId;
   final _PdfRendererCancellationTokenId? cancellationTokenId;
 
   R run(_PdfRendererWorkerState state);
@@ -339,8 +417,11 @@ abstract class _PdfRendererWorkerMessage<R> {
     }
   }
 
-  bool cancelIfQueued(_PdfRendererCancellationTokenId token) {
-    if (cancellationTokenId != token) return false;
+  bool cancelIfQueued(_PdfRendererCancelRequest request) {
+    if (rendererId != request.rendererId ||
+        cancellationTokenId != request.cancellationTokenId) {
+      return false;
+    }
     sendPort.send(const _PdfRendererCallCanceled());
     return true;
   }
@@ -349,6 +430,7 @@ abstract class _PdfRendererWorkerMessage<R> {
 class _PdfRendererComputeParams<M, R> extends _PdfRendererWorkerMessage<R> {
   _PdfRendererComputeParams(
     super.sendPort,
+    super.rendererId,
     this.callback,
     this.message, {
     super.cancellationTokenId,
@@ -358,11 +440,53 @@ class _PdfRendererComputeParams<M, R> extends _PdfRendererWorkerMessage<R> {
   final M message;
 
   @override
-  R run(_PdfRendererWorkerState state) => callback(state.renderer, message);
+  R run(_PdfRendererWorkerState state) {
+    final id = rendererId;
+    final renderer = id == null ? null : state.renderers[id];
+    if (renderer == null) {
+      throw StateError('PdfPageAsyncRenderer is disposed.');
+    }
+    return callback(renderer, message);
+  }
+}
+
+class _PdfRendererOpenRequest
+    extends _PdfRendererWorkerMessage<_PdfRendererOpenResult> {
+  _PdfRendererOpenRequest(
+    SendPort sendPort,
+    this.documentBytes,
+    this.password,
+    this.maxDownscaledImagePixels,
+  ) : super(sendPort, null);
+
+  final TransferableTypedData documentBytes;
+  final String password;
+  final int? maxDownscaledImagePixels;
+
+  @override
+  _PdfRendererOpenResult run(_PdfRendererWorkerState state) =>
+      state.open(documentBytes, password, maxDownscaledImagePixels);
+}
+
+class _PdfRendererOpenResult {
+  const _PdfRendererOpenResult(this.rendererId, this.pageSizes);
+
+  final _PdfRendererId rendererId;
+  final List<PdfPageSize> pageSizes;
+}
+
+class _PdfRendererDisposeRequest extends _PdfRendererWorkerMessage<void> {
+  _PdfRendererDisposeRequest(super.sendPort, super.rendererId);
+
+  @override
+  void run(_PdfRendererWorkerState state) {
+    final id = rendererId;
+    if (id != null) state.renderers.remove(id);
+  }
 }
 
 class _PdfRendererStopRequest extends _PdfRendererWorkerMessage<void> {
-  _PdfRendererStopRequest(super.sendPort);
+  _PdfRendererStopRequest(SendPort sendPort) : super(sendPort, null);
 
   @override
   void run(_PdfRendererWorkerState state) {
@@ -379,4 +503,11 @@ class _PdfRendererCallError {
 
 class _PdfRendererCallCanceled {
   const _PdfRendererCallCanceled();
+}
+
+class _PdfRendererCancelRequest {
+  const _PdfRendererCancelRequest(this.rendererId, this.cancellationTokenId);
+
+  final _PdfRendererId rendererId;
+  final _PdfRendererCancellationTokenId cancellationTokenId;
 }
