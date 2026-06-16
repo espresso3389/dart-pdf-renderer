@@ -92,6 +92,20 @@ void main() {
       await worker.dispose();
     }
   });
+
+  test('can clear page cache through the worker', () async {
+    final worker = await PdfPageAsyncRendererWorker.create();
+    try {
+      final renderer = await worker.openData(_testPdf());
+      await _render(renderer);
+      await renderer.clearPageCache(1);
+      final bgra = await _render(renderer);
+
+      expect(_nonWhitePixelsBgra(bgra!), greaterThan(0));
+    } finally {
+      await worker.dispose();
+    }
+  });
 }
 
 Uint8List _testPdf() => imageXObjectPdf(

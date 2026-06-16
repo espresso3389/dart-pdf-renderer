@@ -51,8 +51,7 @@ class PdfPageRenderer {
 
   /// The PDF document rendered by this instance.
   final PdfDocument document;
-  final _displayLists =
-      <({bool annotations, int pageNumber}), _PdfPageDisplayList>{};
+  final _displayLists = <_PdfPageDisplayListKey, _PdfPageDisplayList>{};
 
   /// The glyph raster cache used while rendering text.
   final PdfGlyphRasterCache glyphRasterCache;
@@ -62,10 +61,38 @@ class PdfPageRenderer {
   late final _ImageColorContext _documentImageColorContext =
       _ImageColorContext.fromDocument(document.cos);
 
+  /// The current number of cached page display lists.
+  int get displayListCacheEntryCount => _displayLists.length;
+
   /// The page sizes in display coordinate order.
   List<PdfPageSize> get pageSizes => List.unmodifiable([
     for (var i = 0; i < document.pageCount; i++) _pageSize(document.page(i)),
   ]);
+
+  /// Removes cached display lists.
+  ///
+  /// When [pageNumber] is provided, only that 1-based page is cleared. When
+  /// [annotations] is provided, only entries for that annotation mode are
+  /// cleared. With no filters, the whole display-list cache is cleared.
+  void clearDisplayListCache({int? pageNumber, bool? annotations}) {
+    if (pageNumber == null && annotations == null) {
+      _displayLists.clear();
+      return;
+    }
+    final pageKey = pageNumber == null
+        ? null
+        : _pageCacheKeyForPageNumber(pageNumber);
+    _displayLists.removeWhere(
+      (key, _) =>
+          (pageKey == null || key.page == pageKey) &&
+          (annotations == null || key.annotations == annotations),
+    );
+  }
+
+  /// Removes cached display lists for a single 1-based page.
+  void clearPageCache(int pageNumber, {bool? annotations}) {
+    clearDisplayListCache(pageNumber: pageNumber, annotations: annotations);
+  }
 
   /// Renders a page region to BGRA pixels.
   Uint8List renderBgraRegion({
@@ -136,7 +163,10 @@ class PdfPageRenderer {
     bool annotations, {
     PdfRenderTiming? timing,
   }) {
-    final key = (pageNumber: pageNumber, annotations: annotations);
+    final key = _PdfPageDisplayListKey(
+      _pageCacheKeyForPage(page),
+      annotations: annotations,
+    );
     final cached = _displayLists[key];
     if (cached != null) {
       timing?.displayListCacheHit = true;
@@ -155,6 +185,17 @@ class PdfPageRenderer {
     }
     _displayLists[key] = displayList;
     return displayList;
+  }
+
+  _PdfPageCacheKey _pageCacheKeyForPageNumber(int pageNumber) {
+    if (pageNumber < 1 || pageNumber > document.pageCount) {
+      throw RangeError.range(pageNumber, 1, document.pageCount, 'pageNumber');
+    }
+    return _pageCacheKeyForPage(document.page(pageNumber - 1));
+  }
+
+  _PdfPageCacheKey _pageCacheKeyForPage(PdfPage page) {
+    return _PdfPageCacheKey(document.cos.referenceTo(page.dict), page.dict);
   }
 
   static PdfPageSize _pageSize(PdfPage page) {
@@ -288,6 +329,41 @@ class _PdfPageDisplayList {
       }
     }
   }
+}
+
+class _PdfPageDisplayListKey {
+  const _PdfPageDisplayListKey(this.page, {required this.annotations});
+
+  final _PdfPageCacheKey page;
+  final bool annotations;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _PdfPageDisplayListKey &&
+      other.page == page &&
+      other.annotations == annotations;
+
+  @override
+  int get hashCode => Object.hash(page, annotations);
+}
+
+class _PdfPageCacheKey {
+  const _PdfPageCacheKey(this.reference, this.dictionary);
+
+  final cos.CosReference? reference;
+  final cos.CosDictionary dictionary;
+
+  @override
+  bool operator ==(Object other) {
+    if (other is! _PdfPageCacheKey) return false;
+    final ref = reference;
+    final otherRef = other.reference;
+    if (ref != null || otherRef != null) return ref == otherRef;
+    return identical(dictionary, other.dictionary);
+  }
+
+  @override
+  int get hashCode => reference?.hashCode ?? identityHashCode(dictionary);
 }
 
 Map<cos.CosStream, _ImageColorContext> _collectImageColorContexts(

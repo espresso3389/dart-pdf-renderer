@@ -23,6 +23,19 @@ void main() {
         } finally {
           image?.dispose();
         }
+
+        await document.reloadPages(pageNumbersToReload: [page.pageNumber]);
+        final rerendered = await page.render(
+          fullWidth: 256,
+          fullHeight: 256 * page.height / page.width,
+          backgroundColor: 0xffffffff,
+        );
+        try {
+          expect(rerendered, isNotNull);
+          expect(_nonWhitePixelsBgra(rerendered!.pixels), greaterThan(0));
+        } finally {
+          rerendered?.dispose();
+        }
       } finally {
         await document.dispose();
       }

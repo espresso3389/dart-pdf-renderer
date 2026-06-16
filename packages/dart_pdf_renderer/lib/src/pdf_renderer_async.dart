@@ -95,11 +95,35 @@ class PdfPageAsyncRenderer {
     return data?.materialize().asUint8List();
   }
 
+  /// Removes cached display lists for this document renderer.
+  Future<void> clearDisplayListCache({int? pageNumber, bool? annotations}) {
+    _checkNotDisposed();
+    return _worker._clearDisplayListCache(
+      _rendererId,
+      pageNumber: pageNumber,
+      annotations: annotations,
+    );
+  }
+
+  /// Removes cached display lists for a single 1-based page.
+  Future<void> clearPageCache(int pageNumber, {bool? annotations}) {
+    return clearDisplayListCache(
+      pageNumber: pageNumber,
+      annotations: annotations,
+    );
+  }
+
   /// Releases this document renderer from its worker.
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
     await _worker._disposeRenderer(_rendererId);
+  }
+
+  void _checkNotDisposed() {
+    if (_disposed) {
+      throw StateError('PdfPageAsyncRenderer is disposed.');
+    }
   }
 }
 
@@ -205,6 +229,33 @@ class PdfPageAsyncRendererWorker {
     try {
       _sendPort.send(
         _PdfRendererDisposeRequest(receivePort.sendPort, rendererId),
+      );
+      final response = await receivePort.first;
+      if (response is _PdfRendererCallError) {
+        throw StateError('${response.error}\n${response.stackTrace}');
+      }
+    } finally {
+      receivePort.close();
+    }
+  }
+
+  Future<void> _clearDisplayListCache(
+    _PdfRendererId rendererId, {
+    int? pageNumber,
+    bool? annotations,
+  }) async {
+    if (_disposed) {
+      throw StateError('PdfPageAsyncRendererWorker is disposed.');
+    }
+    final receivePort = ReceivePort();
+    try {
+      _sendPort.send(
+        _PdfRendererClearDisplayListCacheRequest(
+          receivePort.sendPort,
+          rendererId,
+          pageNumber: pageNumber,
+          annotations: annotations,
+        ),
       );
       final response = await receivePort.first;
       if (response is _PdfRendererCallError) {
@@ -482,6 +533,32 @@ class _PdfRendererDisposeRequest extends _PdfRendererWorkerMessage<void> {
   void run(_PdfRendererWorkerState state) {
     final id = rendererId;
     if (id != null) state.renderers.remove(id);
+  }
+}
+
+class _PdfRendererClearDisplayListCacheRequest
+    extends _PdfRendererWorkerMessage<void> {
+  _PdfRendererClearDisplayListCacheRequest(
+    super.sendPort,
+    super.rendererId, {
+    this.pageNumber,
+    this.annotations,
+  });
+
+  final int? pageNumber;
+  final bool? annotations;
+
+  @override
+  void run(_PdfRendererWorkerState state) {
+    final id = rendererId;
+    final renderer = id == null ? null : state.renderers[id];
+    if (renderer == null) {
+      throw StateError('PdfPageAsyncRenderer is disposed.');
+    }
+    renderer.clearDisplayListCache(
+      pageNumber: pageNumber,
+      annotations: annotations,
+    );
   }
 }
 

@@ -123,6 +123,67 @@ Uint8List singlePageContentPdf(String content) {
   return out.toBytes();
 }
 
+Uint8List twoPageContentPdf(String firstContent, String secondContent) {
+  final out = BytesBuilder();
+  final offsets = <int, int>{};
+
+  void addAscii(String value) => out.add(latin1.encode(value));
+
+  void addObject(int id, List<int> body) {
+    offsets[id] = out.length;
+    addAscii('$id 0 obj\n');
+    out.add(body);
+    addAscii('\nendobj\n');
+  }
+
+  List<int> ascii(String value) => latin1.encode(value);
+
+  List<int> streamObject(String dictionary, List<int> stream) {
+    final body = BytesBuilder()
+      ..add(ascii('$dictionary\nstream\n'))
+      ..add(stream)
+      ..add(ascii('\nendstream'));
+    return body.toBytes();
+  }
+
+  final firstBytes = ascii(firstContent);
+  final secondBytes = ascii(secondContent);
+  addAscii('%PDF-1.4\n');
+  addObject(1, ascii('<< /Type /Catalog /Pages 2 0 R >>'));
+  addObject(2, ascii('<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'));
+  addObject(
+    3,
+    ascii(
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 16 16] '
+      '/Resources << >> /Contents 5 0 R >>',
+    ),
+  );
+  addObject(
+    4,
+    ascii(
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 16 16] '
+      '/Resources << >> /Contents 6 0 R >>',
+    ),
+  );
+  addObject(5, streamObject('<< /Length ${firstBytes.length} >>', firstBytes));
+  addObject(
+    6,
+    streamObject('<< /Length ${secondBytes.length} >>', secondBytes),
+  );
+
+  final xrefOffset = out.length;
+  addAscii('xref\n0 7\n');
+  addAscii('0000000000 65535 f \n');
+  for (var id = 1; id <= 6; id++) {
+    addAscii('${offsets[id].toString().padLeft(10, '0')} 00000 n \n');
+  }
+  addAscii(
+    'trailer\n<< /Size 7 /Root 1 0 R >>\n'
+    'startxref\n$xrefOffset\n%%EOF\n',
+  );
+  return out.toBytes();
+}
+
 class TestPdfStreamObject {
   const TestPdfStreamObject(this.id, this.dictionary, this.stream);
 

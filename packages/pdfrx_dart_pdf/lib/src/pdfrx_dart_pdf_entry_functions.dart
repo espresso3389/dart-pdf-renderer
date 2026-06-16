@@ -468,7 +468,16 @@ class _DartPdfDocument extends pdfrx.PdfDocument {
   );
 
   @override
-  Future<void> reloadPages({List<int>? pageNumbersToReload}) async {}
+  Future<void> reloadPages({List<int>? pageNumbersToReload}) async {
+    final pageNumbers = pageNumbersToReload;
+    if (pageNumbers == null) {
+      await _asyncRenderer.clearDisplayListCache();
+      return;
+    }
+    for (final pageNumber in pageNumbers.toSet()) {
+      await _asyncRenderer.clearPageCache(pageNumber);
+    }
+  }
 }
 
 class _DartPdfPage extends pdfrx.PdfPage {
