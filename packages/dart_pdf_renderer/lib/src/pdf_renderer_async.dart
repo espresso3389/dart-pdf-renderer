@@ -76,30 +76,28 @@ class PdfPageAsyncRenderer {
       );
     }
     if (cancellationToken?.isCancelled ?? false) return null;
-    final data = await _worker._runOnRendererCancelable<TransferableTypedData>(
-      _rendererId,
-      (renderer) {
-        final bgra = _debugTimeSync(
-          'renderBgraRegion '
-          'page=$pageNumber '
-          'region=${x.toStringAsFixed(1)},${y.toStringAsFixed(1)} '
-          '${width}x$height '
-          'pixelRatio=${pixelRatio.toStringAsFixed(3)}',
-          () => renderer.renderBgraRegion(
-            pageNumber: pageNumber,
-            x: x,
-            y: y,
-            width: width,
-            height: height,
-            pixelRatio: pixelRatio,
-            backgroundColor: backgroundColor,
-            annotations: annotations,
-          ),
-        );
-        return TransferableTypedData.fromList([bgra]);
-      },
-      cancellationToken: cancellationToken,
-    );
+    final data = await _worker._runOnRendererCancelable(_rendererId, (
+      renderer,
+    ) {
+      final bgra = _debugTimeSync(
+        'renderBgraRegion '
+        'page=$pageNumber '
+        'region=${x.toStringAsFixed(1)},${y.toStringAsFixed(1)} '
+        '${width}x$height '
+        'pixelRatio=${pixelRatio.toStringAsFixed(3)}',
+        () => renderer.renderBgraRegion(
+          pageNumber: pageNumber,
+          x: x,
+          y: y,
+          width: width,
+          height: height,
+          pixelRatio: pixelRatio,
+          backgroundColor: backgroundColor,
+          annotations: annotations,
+        ),
+      );
+      return TransferableTypedData.fromList([bgra]);
+    }, cancellationToken: cancellationToken);
     return data?.materialize().asUint8List();
   }
 
@@ -113,7 +111,7 @@ class PdfPageAsyncRenderer {
   /// cache key.
   Future<void> clearDisplayListCache({int? pageNumber, bool? annotations}) {
     _checkNotDisposed();
-    return _worker._runOnRenderer<void>(
+    return _worker._runOnRenderer(
       _rendererId,
       (renderer) => renderer.clearDisplayListCache(
         pageNumber: pageNumber,
@@ -142,9 +140,7 @@ class PdfPageAsyncRenderer {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
-    await _worker._run<void>((state) {
-      state.renderers.remove(_rendererId);
-    });
+    await _worker._run((state) => state.renderers.remove(_rendererId));
   }
 
   void _checkNotDisposed() {
