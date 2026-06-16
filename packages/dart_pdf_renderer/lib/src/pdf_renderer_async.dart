@@ -202,6 +202,7 @@ class PdfPageAsyncRendererWorker {
         maxDownscaledImagePixels,
       ),
     );
+    response as _PdfRendererOpenResult;
     return PdfPageAsyncRenderer._(
       this,
       response.rendererId,
@@ -216,13 +217,14 @@ class PdfPageAsyncRendererWorker {
   }) async {
     _checkNotDisposed();
     if (cancellationToken?.isCancelled ?? false) return null;
-    return await _sendCancelableRequest<TransferableTypedData>(
+    return await _sendRequest<TransferableTypedData>(
       _PdfRendererRenderRequest(
         rendererId,
         params,
         cancellationTokenId: cancellationToken?._id,
       ),
       cancellationToken: cancellationToken,
+      nullableOnCancel: true,
     );
   }
 
@@ -263,23 +265,10 @@ class PdfPageAsyncRendererWorker {
     }
   }
 
-  Future<R> _sendRequest<R>(_PdfRendererWorkerRequest<R> request) async {
-    final receivePort = ReceivePort();
-    try {
-      _sendPort.send(request.bind(receivePort.sendPort));
-      final response = await receivePort.first;
-      if (response is _PdfRendererCallError) {
-        throw StateError('${response.error}\n${response.stackTrace}');
-      }
-      return response as R;
-    } finally {
-      receivePort.close();
-    }
-  }
-
-  Future<R?> _sendCancelableRequest<R>(
+  Future<R?> _sendRequest<R>(
     _PdfRendererWorkerRequest<R> request, {
     PdfRenderCancellationToken? cancellationToken,
+    bool nullableOnCancel = false,
   }) async {
     final receivePort = ReceivePort();
     try {
@@ -287,7 +276,8 @@ class PdfPageAsyncRendererWorker {
       cancellationToken?._markRequestSent();
       final response = await receivePort.first;
       if (response is _PdfRendererCallCanceled) {
-        return null;
+        if (nullableOnCancel) return null;
+        throw StateError('Renderer worker request was canceled.');
       }
       if (response is _PdfRendererCallError) {
         throw StateError('${response.error}\n${response.stackTrace}');
