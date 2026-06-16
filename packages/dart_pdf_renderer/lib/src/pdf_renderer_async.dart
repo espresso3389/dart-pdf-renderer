@@ -8,7 +8,19 @@ import 'package:pdf_document/pdf_document.dart';
 
 import 'pdf_renderer.dart';
 
-/// An isolate-backed asynchronous PDF page renderer.
+/// An asynchronous renderer for one PDF document hosted by a
+/// [PdfPageAsyncRendererWorker].
+///
+/// This object is a lightweight handle that lives on the caller isolate. The
+/// real [PdfPageRenderer] and [PdfDocument] live inside the worker isolate, and
+/// [_rendererId] identifies that renderer in the worker's renderer table. This
+/// keeps multiple documents on one worker isolate so they can share worker-wide
+/// caches such as glyph rasterization and, in the future, font substitution
+/// state.
+///
+/// Call [dispose] when the document is closed. Disposing this handle releases
+/// only the document renderer in the worker; it does not stop the worker or
+/// clear caches shared with other renderers.
 class PdfPageAsyncRenderer {
   PdfPageAsyncRenderer._(this._worker, this._rendererId, this.pageSizes);
 
@@ -16,11 +28,20 @@ class PdfPageAsyncRenderer {
   final _PdfRendererId _rendererId;
 
   /// The page sizes in display coordinate order.
+  ///
+  /// These are captured when the document is opened in the worker and mirrored
+  /// onto this handle so callers do not need a worker round trip just to lay out
+  /// page placeholders.
   final List<PdfPageSize> pageSizes;
   var _nextCancellationTokenId = 0;
   bool _disposed = false;
 
-  /// Creates a cancellation token for a future render request.
+  /// Creates a cancellation token for a future render request on this renderer.
+  ///
+  /// Tokens are bound to the renderer that created them. Passing a token from
+  /// another [PdfPageAsyncRenderer] to [renderBgraRegion] throws, because the
+  /// worker queue identifies cancellable jobs by the pair of document renderer
+  /// id and token id.
   PdfRenderCancellationToken createCancellationToken() =>
       PdfRenderCancellationToken._(
         _worker._sendPort,
@@ -31,7 +52,8 @@ class PdfPageAsyncRenderer {
   /// Renders a page region to BGRA pixels on the worker isolate.
   ///
   /// Returns `null` when [cancellationToken] is cancelled before the render
-  /// starts.
+  /// starts. The request is queued behind other requests submitted to the same
+  /// [PdfPageAsyncRendererWorker], including requests for other open documents.
   Future<Uint8List?> renderBgraRegion({
     required int pageNumber,
     required double x,
@@ -96,6 +118,13 @@ class PdfPageAsyncRenderer {
   }
 
   /// Removes cached display lists for this document renderer.
+  ///
+  /// The cache lives in the worker-side [PdfPageRenderer], not in this handle.
+  /// If [pageNumber] is supplied, it is resolved in the worker against the
+  /// document's current page order and then mapped to the page's stable cache
+  /// identity. This means page reordering can change which page number resolves
+  /// to which cache entry without making page numbers part of the internal
+  /// cache key.
   Future<void> clearDisplayListCache({int? pageNumber, bool? annotations}) {
     _checkNotDisposed();
     return _worker._clearDisplayListCache(
@@ -106,6 +135,9 @@ class PdfPageAsyncRenderer {
   }
 
   /// Removes cached display lists for a single 1-based page.
+  ///
+  /// This is a convenience wrapper around [clearDisplayListCache]. The page
+  /// number is interpreted in the document's current page order.
   Future<void> clearPageCache(int pageNumber, {bool? annotations}) {
     return clearDisplayListCache(
       pageNumber: pageNumber,
@@ -114,6 +146,11 @@ class PdfPageAsyncRenderer {
   }
 
   /// Releases this document renderer from its worker.
+  ///
+  /// Shared worker caches remain alive for other document renderers hosted by
+  /// the same [PdfPageAsyncRendererWorker]. Stop the worker itself with
+  /// [PdfPageAsyncRendererWorker.dispose] when those shared caches should be
+  /// discarded too.
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
@@ -128,6 +165,17 @@ class PdfPageAsyncRenderer {
 }
 
 /// A shared isolate-backed renderer worker that can host multiple documents.
+///
+/// The worker owns one isolate and a FIFO render queue. Each call to [openData]
+/// creates a worker-side [PdfPageRenderer] and returns a [PdfPageAsyncRenderer]
+/// handle for it. Requests from all handles are serialized through the same
+/// queue, which reduces parallelism but allows expensive worker-wide state to
+/// be shared across open documents.
+///
+/// Currently, glyph raster masks are shared at the worker level, while decoded
+/// image caches are document-renderer local. This keeps large image cache
+/// pressure isolated per document while still sharing glyph work across
+/// documents. Font substitution caches should also live at this worker level.
 class PdfPageAsyncRendererWorker {
   PdfPageAsyncRendererWorker._(this._isolate, this._sendPort);
 
@@ -136,6 +184,10 @@ class PdfPageAsyncRendererWorker {
   bool _disposed = false;
 
   /// Starts a renderer worker isolate.
+  ///
+  /// The returned worker is initially empty. Use [openData] to open one or more
+  /// documents on it, and [dispose] to stop the isolate and release all
+  /// worker-side renderers and caches.
   static Future<PdfPageAsyncRendererWorker> create() async {
     final readyPort = ReceivePort();
     final isolate = await Isolate.spawn(
@@ -156,6 +208,11 @@ class PdfPageAsyncRendererWorker {
   }
 
   /// Opens [documentBytes] in this worker and returns a document renderer.
+  ///
+  /// The bytes are transferred to the worker isolate, opened as a
+  /// [PdfDocument], and wrapped by a worker-side [PdfPageRenderer]. The returned
+  /// [PdfPageAsyncRenderer] contains only the renderer id and page sizes needed
+  /// to address that worker-side renderer from the caller isolate.
   Future<PdfPageAsyncRenderer> openData(
     Uint8List documentBytes, {
     String password = '',
@@ -364,7 +421,14 @@ class _PdfRendererWorkerState {
   _PdfRendererWorkerState(this.receivePort);
 
   final ReceivePort receivePort;
+
+  // Worker-side document renderers addressed from the caller isolate by
+  // _PdfRendererId. The caller cannot hold these objects directly because they
+  // live in this isolate.
   final renderers = <_PdfRendererId, PdfPageRenderer>{};
+
+  // Shared across all renderers hosted by this worker. Image decode caches stay
+  // renderer-local because large image pressure is usually document-specific.
   final glyphRasterCache = PdfGlyphRasterCache();
   var _nextRendererId = 0;
   var stopped = false;
@@ -432,6 +496,14 @@ typedef _PdfRendererComputeCallback<M, R> =
     R Function(PdfPageRenderer renderer, M message);
 
 typedef _PdfRendererCancellationTokenId = int;
+
+/// Opaque id for a worker-side [PdfPageRenderer].
+///
+/// A [PdfPageAsyncRenderer] stores this id so every render/cache/dispose
+/// message can identify which document renderer in the shared worker should
+/// handle the request. Cancellation uses this together with
+/// [_PdfRendererCancellationTokenId] so queued jobs from different documents do
+/// not collide.
 typedef _PdfRendererId = int;
 
 typedef _PdfRendererRenderParams = ({
@@ -453,6 +525,10 @@ abstract class _PdfRendererWorkerMessage<R> {
   });
 
   final SendPort sendPort;
+
+  // Null only for worker-level requests such as opening a new document or
+  // stopping the worker. Renderer-specific requests must carry the id returned
+  // by _PdfRendererOpenResult.
   final _PdfRendererId? rendererId;
   final _PdfRendererCancellationTokenId? cancellationTokenId;
 

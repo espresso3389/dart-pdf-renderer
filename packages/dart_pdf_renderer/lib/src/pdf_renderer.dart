@@ -62,6 +62,9 @@ class PdfPageRenderer {
       _ImageColorContext.fromDocument(document.cos);
 
   /// The current number of cached page display lists.
+  ///
+  /// Each page can have separate entries for annotation and non-annotation
+  /// rendering.
   int get displayListCacheEntryCount => _displayLists.length;
 
   /// The page sizes in display coordinate order.
@@ -74,6 +77,12 @@ class PdfPageRenderer {
   /// When [pageNumber] is provided, only that 1-based page is cleared. When
   /// [annotations] is provided, only entries for that annotation mode are
   /// cleared. With no filters, the whole display-list cache is cleared.
+  ///
+  /// Internally, display lists are keyed by the page object's identity rather
+  /// than by page number. The page number is resolved through the document's
+  /// current page tree at the time this method is called, so page reordering can
+  /// update page-number lookup without making existing cache entries depend on
+  /// their old positions.
   void clearDisplayListCache({int? pageNumber, bool? annotations}) {
     if (pageNumber == null && annotations == null) {
       _displayLists.clear();
@@ -90,6 +99,9 @@ class PdfPageRenderer {
   }
 
   /// Removes cached display lists for a single 1-based page.
+  ///
+  /// The page number is a lookup key into the document's current page order;
+  /// the cached entry itself is identified by the page dictionary/reference.
   void clearPageCache(int pageNumber, {bool? annotations}) {
     clearDisplayListCache(pageNumber: pageNumber, annotations: annotations);
   }
@@ -347,6 +359,13 @@ class _PdfPageDisplayListKey {
   int get hashCode => Object.hash(page, annotations);
 }
 
+/// Stable identity for a page cache entry.
+///
+/// Page numbers are deliberately not part of this key. For ordinary indirect
+/// pages, the object reference survives page reordering and is the strongest
+/// identity we have. For direct page dictionaries, object identity is the
+/// fallback. If editing replaces a page dictionary with a new object, it gets a
+/// new cache key and old entries can be evicted normally.
 class _PdfPageCacheKey {
   const _PdfPageCacheKey(this.reference, this.dictionary);
 
