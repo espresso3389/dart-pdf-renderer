@@ -368,6 +368,12 @@ DecodedImage? decodePdfImageInternal(
       stopBeforeFilter: filters.contains('DCTDecode') ? 'DCTDecode' : 'DCT',
     );
     if (colorSpace?.kind == ImageColorSpaceKind.cmyk) {
+      // package:image's public JPEG decoder converts to an RGB image before we
+      // can apply the PDF color space, /Decode array, Adobe APP14 transform, or
+      // ICC profile. For CMYK JPEGs we need the raw component planes instead,
+      // so decodeCmykJpeg uses package:image's internal JpegData as a temporary
+      // escape hatch. Keep this path narrow and replace it if package:image
+      // grows a public API for decoded JPEG component data.
       final decoded = decodeCmykJpeg(cosDocument, dict, bytes, colorSpace!);
       if (decoded != null) {
         return applyImageSoftMask(
@@ -599,6 +605,9 @@ DecodedImage? decodeCmykJpeg(
   ImageColorSpace colorSpace,
 ) {
   try {
+    // JpegData is intentionally not part of package:image's public surface, but
+    // it is currently the only available way to read DCT component planes
+    // without first losing CMYK/YCCK data to a public RGB conversion.
     final jpeg = image_internal.JpegData()..read(bytes);
     if (jpeg.components.length != 4) return null;
     final width = jpeg.width ?? 0;
