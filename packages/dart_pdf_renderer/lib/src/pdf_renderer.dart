@@ -648,7 +648,11 @@ class PdfGlyphRasterCache {
     PdfPath outline,
     _GlyphRasterPlacement placement,
   ) {
-    final contours = _flattenPath(outline, transform: placement.transform);
+    final contours = _flattenPath(
+      outline,
+      transform: placement.transform,
+      closeOpenContours: true,
+    );
     final bounds = _rawBoundsOf(contours);
     if (bounds == null || bounds.isEmpty) {
       return const _GlyphRasterMask.empty();
@@ -1636,7 +1640,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
 
   @override
   void clipPath(PdfPath path, PdfFillRule rule) {
-    final contours = _flatten(path);
+    final contours = _flatten(path, closeOpenContours: true);
     final bounds = _boundsOf(contours);
     if (bounds == null) return;
     _trace(
@@ -2041,7 +2045,11 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     required String operation,
     String? details,
   }) {
-    final contours = _flatten(path, transform: transform);
+    final contours = _flatten(
+      path,
+      transform: transform,
+      closeOpenContours: true,
+    );
     if (contours.isEmpty) return;
     final bounds = _boundsOf(contours)?.intersect(_clip.bounds);
     if (bounds == null || bounds.isEmpty) return;
@@ -2139,7 +2147,11 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
       return;
     }
 
-    final contours = _flatten(path, transform: PdfMatrix.identity);
+    final contours = _flatten(
+      path,
+      transform: PdfMatrix.identity,
+      closeOpenContours: true,
+    );
     if (contours.isEmpty) return;
     final bounds = _boundsOf(contours)?.intersect(_clip.bounds);
     if (bounds == null || bounds.isEmpty) return;
@@ -2511,8 +2523,16 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     return '${normalized.substring(0, 45)}...';
   }
 
-  List<List<_Point>> _flatten(PdfPath path, {PdfMatrix? transform}) {
-    return _flattenPath(path, transform: transform ?? _transform);
+  List<List<_Point>> _flatten(
+    PdfPath path, {
+    PdfMatrix? transform,
+    bool closeOpenContours = false,
+  }) {
+    return _flattenPath(
+      path,
+      transform: transform ?? _transform,
+      closeOpenContours: closeOpenContours,
+    );
   }
 
   _IntRect? _boundsOf(List<List<_Point>> contours) {
@@ -4172,11 +4192,24 @@ int _cubicFlattenSegmentCount(_Point p0, _Point p1, _Point p2, _Point p3) {
   return _minCubicFlattenSegments;
 }
 
-List<List<_Point>> _flattenPath(PdfPath path, {required PdfMatrix transform}) {
+List<List<_Point>> _flattenPath(
+  PdfPath path, {
+  required PdfMatrix transform,
+  bool closeOpenContours = false,
+}) {
   final contours = <List<_Point>>[];
   List<_Point>? current;
   _Point? start;
   _Point? cursor;
+
+  void closeCurrentContour() {
+    final contour = current;
+    final startPoint = start;
+    if (!closeOpenContours || contour == null || startPoint == null) return;
+    if (contour.isEmpty || contour.last.distanceTo(startPoint) > 1e-6) {
+      contour.add(startPoint);
+    }
+  }
 
   _Point tx(double x, double y) =>
       _Point(transform.transformX(x, y), transform.transformY(x, y));
@@ -4184,6 +4217,7 @@ List<List<_Point>> _flattenPath(PdfPath path, {required PdfMatrix transform}) {
   for (final segment in path.segments) {
     switch (segment) {
       case PdfMoveTo(:final x, :final y):
+        closeCurrentContour();
         current = <_Point>[];
         contours.add(current);
         start = cursor = tx(x, y);
@@ -4211,6 +4245,7 @@ List<List<_Point>> _flattenPath(PdfPath path, {required PdfMatrix transform}) {
         cursor = start;
     }
   }
+  closeCurrentContour();
   return [
     for (final contour in contours)
       if (contour.length >= 2) contour,
