@@ -7,21 +7,7 @@ import 'package:image/image.dart' as image;
 import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
 import 'package:pdf_cos/pdf_cos.dart' as cos;
 import 'package:pdf_document/pdf_document.dart';
-import 'package:pdf_graphics/pdf_graphics.dart'
-    hide
-        PdfBeginGroupCommand,
-        PdfClipPathCommand,
-        PdfDrawImageCommand,
-        PdfDrawTextCommand,
-        PdfEndGroupCommand,
-        PdfFillMeshCommand,
-        PdfFillPathCommand,
-        PdfFillPathGradientCommand,
-        PdfRestoreCommand,
-        PdfSaveCommand,
-        PdfSetBlendModeCommand,
-        PdfStrokePathCommand,
-        RecordingPdfDevice;
+import 'package:pdf_graphics/pdf_graphics.dart' as graphics;
 import 'pdf_display_command.dart';
 import 'pdfium_cmyk.dart';
 import 'pdf_renderer.dart';
@@ -59,9 +45,9 @@ class PdfGlyphRasterCache {
   bool paintGlyph({
     required RgbaSurface surface,
     required ClipState clip,
-    required PdfPath outline,
-    required PdfMatrix transform,
-    required PdfColor color,
+    required graphics.PdfPath outline,
+    required graphics.PdfMatrix transform,
+    required graphics.PdfColor color,
     required double alpha,
     PdfRenderTiming? timing,
   }) {
@@ -109,7 +95,10 @@ class PdfGlyphRasterCache {
     return true;
   }
 
-  GlyphRasterMask? createMask(PdfPath outline, GlyphRasterPlacement placement) {
+  GlyphRasterMask? createMask(
+    graphics.PdfPath outline,
+    GlyphRasterPlacement placement,
+  ) {
     final contours = flattenPath(
       outline,
       transform: placement.transform,
@@ -124,7 +113,7 @@ class PdfGlyphRasterCache {
     final coverage = buildPathCoverageAlpha(
       bounds,
       contours,
-      PdfFillRule.nonzero,
+      graphics.PdfFillRule.nonzero,
     );
     return GlyphRasterMask(
       bounds.left,
@@ -148,7 +137,7 @@ class GlyphRasterPlacement {
     this.qfy,
   );
 
-  factory GlyphRasterPlacement.from(PdfMatrix transform) {
+  factory GlyphRasterPlacement.from(graphics.PdfMatrix transform) {
     final fx = quantizeFraction(transform.e);
     final fy = quantizeFraction(transform.f);
     return GlyphRasterPlacement(
@@ -172,7 +161,7 @@ class GlyphRasterPlacement {
   final int qfx;
   final int qfy;
 
-  PdfMatrix get transform => PdfMatrix(
+  graphics.PdfMatrix get transform => graphics.PdfMatrix(
     qa / glyphTransformQuantization,
     qb / glyphTransformQuantization,
     qc / glyphTransformQuantization,
@@ -232,19 +221,19 @@ class GlyphRasterKey {
 class GlyphOutlineKey {
   const GlyphOutlineKey(this.segments, this.hashCode);
 
-  factory GlyphOutlineKey.from(PdfPath outline) {
+  factory GlyphOutlineKey.from(graphics.PdfPath outline) {
     var hash = 0x345678;
     for (final segment in outline.segments) {
       switch (segment) {
-        case PdfMoveTo(:final x, :final y):
+        case graphics.PdfMoveTo(:final x, :final y):
           hash = combineHash(hash, 1);
           hash = combineHash(hash, x.hashCode);
           hash = combineHash(hash, y.hashCode);
-        case PdfLineTo(:final x, :final y):
+        case graphics.PdfLineTo(:final x, :final y):
           hash = combineHash(hash, 2);
           hash = combineHash(hash, x.hashCode);
           hash = combineHash(hash, y.hashCode);
-        case PdfCubicTo():
+        case graphics.PdfCubicTo():
           hash = combineHash(hash, 3);
           hash = combineHash(hash, segment.x1.hashCode);
           hash = combineHash(hash, segment.y1.hashCode);
@@ -252,14 +241,14 @@ class GlyphOutlineKey {
           hash = combineHash(hash, segment.y2.hashCode);
           hash = combineHash(hash, segment.x3.hashCode);
           hash = combineHash(hash, segment.y3.hashCode);
-        case PdfClosePath():
+        case graphics.PdfClosePath():
           hash = combineHash(hash, 4);
       }
     }
     return GlyphOutlineKey(outline.segments, hash);
   }
 
-  final List<PdfPathSegment> segments;
+  final List<graphics.PdfPathSegment> segments;
 
   @override
   final int hashCode;
@@ -281,22 +270,22 @@ class GlyphOutlineKey {
 int combineHash(int hash, int value) =>
     0x1fffffff & (hash + value + ((hash & 0x0007ffff) << 10));
 
-bool samePathSegment(PdfPathSegment a, PdfPathSegment b) {
+bool samePathSegment(graphics.PdfPathSegment a, graphics.PdfPathSegment b) {
   switch (a) {
-    case PdfMoveTo(:final x, :final y):
-      return b is PdfMoveTo && x == b.x && y == b.y;
-    case PdfLineTo(:final x, :final y):
-      return b is PdfLineTo && x == b.x && y == b.y;
-    case PdfCubicTo():
-      return b is PdfCubicTo &&
+    case graphics.PdfMoveTo(:final x, :final y):
+      return b is graphics.PdfMoveTo && x == b.x && y == b.y;
+    case graphics.PdfLineTo(:final x, :final y):
+      return b is graphics.PdfLineTo && x == b.x && y == b.y;
+    case graphics.PdfCubicTo():
+      return b is graphics.PdfCubicTo &&
           a.x1 == b.x1 &&
           a.y1 == b.y1 &&
           a.x2 == b.x2 &&
           a.y2 == b.y2 &&
           a.x3 == b.x3 &&
           a.y3 == b.y3;
-    case PdfClosePath():
-      return b is PdfClosePath;
+    case graphics.PdfClosePath():
+      return b is graphics.PdfClosePath;
   }
 }
 
@@ -327,7 +316,7 @@ class GlyphRasterMask {
     required ClipState clip,
     required int baseX,
     required int baseY,
-    required PdfColor color,
+    required graphics.PdfColor color,
     required double alpha,
   }) {
     if (width == 0 || height == 0) return;
@@ -384,7 +373,7 @@ class GlyphRasterMask {
 Uint8List buildPathCoverageAlpha(
   IntRect bounds,
   List<List<Point>> contours,
-  PdfFillRule rule,
+  graphics.PdfFillRule rule,
 ) {
   final coverage = Uint8List(bounds.width * bounds.height);
   final events = <ScanlineIntersection>[];
@@ -408,7 +397,7 @@ Uint8List buildPathCoverageAlpha(
       if (events.isEmpty) continue;
       events.sort((a, b) => a.x.compareTo(b.x));
 
-      if (rule == PdfFillRule.evenOdd) {
+      if (rule == graphics.PdfFillRule.evenOdd) {
         var inside = false;
         var spanStart = 0.0;
         for (final event in events) {
@@ -475,18 +464,21 @@ void addCoverageSpanSamples(
 int quantizeTransform(double value) =>
     (value * glyphTransformQuantization).round();
 
-PdfPath transformPath(PdfPath path, PdfMatrix transform) => PdfPath([
+graphics.PdfPath transformPath(
+  graphics.PdfPath path,
+  graphics.PdfMatrix transform,
+) => graphics.PdfPath([
   for (final segment in path.segments)
     switch (segment) {
-      PdfMoveTo(:final x, :final y) => PdfMoveTo(
+      graphics.PdfMoveTo(:final x, :final y) => graphics.PdfMoveTo(
         transform.transformX(x, y),
         transform.transformY(x, y),
       ),
-      PdfLineTo(:final x, :final y) => PdfLineTo(
+      graphics.PdfLineTo(:final x, :final y) => graphics.PdfLineTo(
         transform.transformX(x, y),
         transform.transformY(x, y),
       ),
-      PdfCubicTo() => PdfCubicTo(
+      graphics.PdfCubicTo() => graphics.PdfCubicTo(
         transform.transformX(segment.x1, segment.y1),
         transform.transformY(segment.x1, segment.y1),
         transform.transformX(segment.x2, segment.y2),
@@ -494,11 +486,14 @@ PdfPath transformPath(PdfPath path, PdfMatrix transform) => PdfPath([
         transform.transformX(segment.x3, segment.y3),
         transform.transformY(segment.x3, segment.y3),
       ),
-      PdfClosePath() => const PdfClosePath(),
+      graphics.PdfClosePath() => const graphics.PdfClosePath(),
     },
 ]);
 
-PdfTextRun transformTextRun(PdfTextRun run, PdfMatrix transform) => PdfTextRun(
+graphics.PdfTextRun transformTextRun(
+  graphics.PdfTextRun run,
+  graphics.PdfMatrix transform,
+) => graphics.PdfTextRun(
   text: run.text,
   transform: run.transform.concat(transform),
   color: run.color,

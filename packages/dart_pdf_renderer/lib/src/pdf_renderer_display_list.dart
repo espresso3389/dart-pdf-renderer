@@ -7,21 +7,7 @@ import 'package:image/image.dart' as image;
 import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
 import 'package:pdf_cos/pdf_cos.dart' as cos;
 import 'package:pdf_document/pdf_document.dart';
-import 'package:pdf_graphics/pdf_graphics.dart'
-    hide
-        PdfBeginGroupCommand,
-        PdfClipPathCommand,
-        PdfDrawImageCommand,
-        PdfDrawTextCommand,
-        PdfEndGroupCommand,
-        PdfFillMeshCommand,
-        PdfFillPathCommand,
-        PdfFillPathGradientCommand,
-        PdfRestoreCommand,
-        PdfSaveCommand,
-        PdfSetBlendModeCommand,
-        PdfStrokePathCommand,
-        RecordingPdfDevice;
+import 'package:pdf_graphics/pdf_graphics.dart' as graphics;
 import 'pdf_display_command.dart';
 import 'pdfium_cmyk.dart';
 import 'pdf_renderer.dart';
@@ -121,7 +107,7 @@ class ImageColorContextCollector {
 
   void walkPage(PdfPage page) {
     walkOperations(
-      ContentStreamParser.parse(page.contentBytes()),
+      graphics.ContentStreamParser.parse(page.contentBytes()),
       page.resources,
       contextForResources(page.resources),
       0,
@@ -149,7 +135,7 @@ class ImageColorContextCollector {
       );
 
   void walkOperations(
-    List<ContentOperation> operations,
+    List<graphics.ContentOperation> operations,
     cos.CosDictionary resources,
     ImageColorContext context,
     int depth,
@@ -191,7 +177,7 @@ class ImageColorContextCollector {
     try {
       final content = cosDocument.decodeStreamData(form);
       walkOperations(
-        ContentStreamParser.parse(content),
+        graphics.ContentStreamParser.parse(content),
         resources,
         context,
         depth,

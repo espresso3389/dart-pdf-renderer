@@ -8,21 +8,7 @@ import 'package:image/image.dart' as image;
 import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
 import 'package:pdf_cos/pdf_cos.dart' as cos;
 import 'package:pdf_document/pdf_document.dart';
-import 'package:pdf_graphics/pdf_graphics.dart'
-    hide
-        PdfBeginGroupCommand,
-        PdfClipPathCommand,
-        PdfDrawImageCommand,
-        PdfDrawTextCommand,
-        PdfEndGroupCommand,
-        PdfFillMeshCommand,
-        PdfFillPathCommand,
-        PdfFillPathGradientCommand,
-        PdfRestoreCommand,
-        PdfSaveCommand,
-        PdfSetBlendModeCommand,
-        PdfStrokePathCommand,
-        RecordingPdfDevice;
+import 'package:pdf_graphics/pdf_graphics.dart' as graphics;
 import 'pdf_display_command.dart';
 import 'pdfium_cmyk.dart';
 
@@ -243,8 +229,10 @@ class PdfPageRenderer {
       imageColorContexts: imageColorContexts,
       documentImageColorContext: documentImageColorContext,
     );
-    final interpreter = PdfInterpreter(cos: page.document.cos, device: device)
-      ..drawPage(page);
+    final interpreter = graphics.PdfInterpreter(
+      cos: page.document.cos,
+      device: device,
+    )..drawPage(page);
     if (annotations) interpreter.drawAnnotations(page);
     return PdfPageDisplayList(List.unmodifiable(device.commands));
   }
@@ -277,10 +265,10 @@ class PdfPageRenderer {
     }
     final viewX = x / pixelRatio;
     final viewY = y / pixelRatio;
-    final transform = PdfMatrix.translation(
+    final transform = graphics.PdfMatrix.translation(
       -viewX,
       -viewY,
-    ).concat(PdfMatrix.scaled(pixelRatio, pixelRatio));
+    ).concat(graphics.PdfMatrix.scaled(pixelRatio, pixelRatio));
     final replayStopwatch = timing == null ? null : (Stopwatch()..start());
     displayList.replay(
       PdfDirectPdfDevice.internal(
@@ -306,24 +294,24 @@ class PdfPageRenderer {
     return surface.pixels;
   }
 
-  static PdfMatrix pageToViewMatrix(PdfPage page) {
+  static graphics.PdfMatrix pageToViewMatrix(PdfPage page) {
     final box = page.cropBox;
-    final unrotated = PdfMatrix.translation(-box.left, -box.bottom)
-        .concat(const PdfMatrix.scaled(1, -1))
-        .concat(PdfMatrix.translation(0, box.height));
+    final unrotated = graphics.PdfMatrix.translation(-box.left, -box.bottom)
+        .concat(const graphics.PdfMatrix.scaled(1, -1))
+        .concat(graphics.PdfMatrix.translation(0, box.height));
     return switch (page.rotation) {
       90 =>
         unrotated
-            .concat(const PdfMatrix(0, 1, -1, 0, 0, 0))
-            .concat(PdfMatrix.translation(box.height, 0)),
+            .concat(const graphics.PdfMatrix(0, 1, -1, 0, 0, 0))
+            .concat(graphics.PdfMatrix.translation(box.height, 0)),
       180 =>
         unrotated
-            .concat(const PdfMatrix(-1, 0, 0, -1, 0, 0))
-            .concat(PdfMatrix.translation(box.width, box.height)),
+            .concat(const graphics.PdfMatrix(-1, 0, 0, -1, 0, 0))
+            .concat(graphics.PdfMatrix.translation(box.width, box.height)),
       270 =>
         unrotated
-            .concat(const PdfMatrix(0, -1, 1, 0, 0, 0))
-            .concat(PdfMatrix.translation(0, box.width)),
+            .concat(const graphics.PdfMatrix(0, -1, 1, 0, 0, 0))
+            .concat(graphics.PdfMatrix.translation(0, box.width)),
       _ => unrotated,
     };
   }

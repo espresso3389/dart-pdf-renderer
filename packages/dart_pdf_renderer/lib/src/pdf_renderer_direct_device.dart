@@ -7,21 +7,7 @@ import 'package:image/image.dart' as image;
 import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
 import 'package:pdf_cos/pdf_cos.dart' as cos;
 import 'package:pdf_document/pdf_document.dart';
-import 'package:pdf_graphics/pdf_graphics.dart'
-    hide
-        PdfBeginGroupCommand,
-        PdfClipPathCommand,
-        PdfDrawImageCommand,
-        PdfDrawTextCommand,
-        PdfEndGroupCommand,
-        PdfFillMeshCommand,
-        PdfFillPathCommand,
-        PdfFillPathGradientCommand,
-        PdfRestoreCommand,
-        PdfSaveCommand,
-        PdfSetBlendModeCommand,
-        PdfStrokePathCommand,
-        RecordingPdfDevice;
+import 'package:pdf_graphics/pdf_graphics.dart' as graphics;
 import 'pdf_display_command.dart';
 import 'pdfium_cmyk.dart';
 import 'pdf_renderer.dart';
@@ -33,11 +19,12 @@ import 'pdf_renderer_image.dart';
 import 'pdf_renderer_models.dart';
 import 'pdf_renderer_recording_device.dart';
 
-class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
+class PdfDirectPdfDevice
+    implements graphics.PdfDevice, PdfDisplayCommandDevice {
   PdfDirectPdfDevice.internal(
     RgbaSurface surface, {
     required this.cosDocument,
-    required PdfMatrix transform,
+    required graphics.PdfMatrix transform,
     this.glyphRasterCache,
     this.imageDecodeCache,
     this.trace,
@@ -62,12 +49,12 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
 
   /// Optional timing collector for rendered operations.
   final PdfRenderTiming? timing;
-  final List<PdfMatrix> transformStack;
+  final List<graphics.PdfMatrix> transformStack;
   final List<ClipState> clipStack;
   final List<double> groupAlphaStack = [];
 
   RgbaSurface get surface => surfaceStack.last;
-  PdfMatrix get transform => transformStack.last;
+  graphics.PdfMatrix get transform => transformStack.last;
   ClipState get clip => clipStack.last;
 
   @override
@@ -83,15 +70,20 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   @override
-  void fillPath(PdfPath path, PdfColor color, PdfFillRule rule, double alpha) {
+  void fillPath(
+    graphics.PdfPath path,
+    graphics.PdfColor color,
+    graphics.PdfFillRule rule,
+    double alpha,
+  ) {
     fillPathInternal(path, color, rule, alpha, operation: 'fillPath');
   }
 
   @override
   void fillPathGradient(
-    PdfPath path,
-    PdfFillRule rule,
-    PdfGradient gradient,
+    graphics.PdfPath path,
+    graphics.PdfFillRule rule,
+    graphics.PdfGradient gradient,
     double alpha,
   ) {
     fillPathGradientInternal(
@@ -103,29 +95,29 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   @override
-  void fillMesh(PdfMesh mesh, double alpha) {
+  void fillMesh(graphics.PdfMesh mesh, double alpha) {
     if (mesh.vertices.isEmpty) return;
-    final path = PdfPath([
+    final path = graphics.PdfPath([
       for (var i = 0; i < mesh.triangles.length; i += 3) ...[
-        PdfMoveTo(
+        graphics.PdfMoveTo(
           mesh.vertices[mesh.triangles[i]].x,
           mesh.vertices[mesh.triangles[i]].y,
         ),
-        PdfLineTo(
+        graphics.PdfLineTo(
           mesh.vertices[mesh.triangles[i + 1]].x,
           mesh.vertices[mesh.triangles[i + 1]].y,
         ),
-        PdfLineTo(
+        graphics.PdfLineTo(
           mesh.vertices[mesh.triangles[i + 2]].x,
           mesh.vertices[mesh.triangles[i + 2]].y,
         ),
-        const PdfClosePath(),
+        const graphics.PdfClosePath(),
       ],
     ]);
     fillPathInternal(
       path,
       mesh.averageColor,
-      PdfFillRule.nonzero,
+      graphics.PdfFillRule.nonzero,
       alpha,
       operation: 'fillMesh',
       details: 'triangles=${mesh.triangles.length ~/ 3} alpha=${f(alpha)}',
@@ -134,9 +126,9 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
 
   @override
   void strokePath(
-    PdfPath path,
-    PdfColor color,
-    PdfStroke stroke,
+    graphics.PdfPath path,
+    graphics.PdfColor color,
+    graphics.PdfStroke stroke,
     double alpha,
   ) {
     final contours = flatten(path);
@@ -166,7 +158,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   @override
-  void clipPath(PdfPath path, PdfFillRule rule) {
+  void clipPath(graphics.PdfPath path, graphics.PdfFillRule rule) {
     final contours = flatten(path, closeOpenContours: true);
     final bounds = boundsOf(contours);
     if (bounds == null) return;
@@ -187,7 +179,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   @override
-  void drawText(PdfTextRun run) {
+  void drawText(graphics.PdfTextRun run) {
     if (run.invisible) {
       traceRegion(
         'skipText',
@@ -209,7 +201,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     for (final glyph in run.glyphs!) {
       final outline = glyph.outline;
       if (outline == null) continue;
-      final shifted = PdfMatrix.translation(
+      final shifted = graphics.PdfMatrix.translation(
         glyph.offset,
         0,
       ).concat(glyphTransform);
@@ -228,7 +220,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
       fillPathWithTransform(
         outline,
         run.color,
-        PdfFillRule.nonzero,
+        graphics.PdfFillRule.nonzero,
         1,
         shifted,
         operation: 'drawText',
@@ -238,7 +230,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   @override
-  void drawImage(PdfImageRequest request) {
+  void drawImage(graphics.PdfImageRequest request) {
     drawImageRequest(ImageDrawRequest(request, ImageColorContext.device));
   }
 
@@ -335,7 +327,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
 
   void drawOpaqueImageNoClip(
     IntRect bounds,
-    PdfMatrix inverse,
+    graphics.PdfMatrix inverse,
     DecodedImage decoded,
   ) {
     final dstPixels = surface.pixels;
@@ -417,7 +409,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   @override
-  void setBlendMode(PdfBlendMode mode) {
+  void setBlendMode(graphics.PdfBlendMode mode) {
     traceOperation('setBlendMode', clip.bounds, mode.name);
   }
 
@@ -546,9 +538,9 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   void fillPathInternal(
-    PdfPath path,
-    PdfColor color,
-    PdfFillRule rule,
+    graphics.PdfPath path,
+    graphics.PdfColor color,
+    graphics.PdfFillRule rule,
     double alpha, {
     required String operation,
     String? details,
@@ -565,11 +557,11 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   void fillPathWithTransform(
-    PdfPath path,
-    PdfColor color,
-    PdfFillRule rule,
+    graphics.PdfPath path,
+    graphics.PdfColor color,
+    graphics.PdfFillRule rule,
     double alpha,
-    PdfMatrix transform, {
+    graphics.PdfMatrix transform, {
     required String operation,
     String? details,
   }) {
@@ -654,9 +646,9 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   void fillPathGradientInternal(
-    PdfPath path,
-    PdfFillRule rule,
-    PdfGradient gradient,
+    graphics.PdfPath path,
+    graphics.PdfFillRule rule,
+    graphics.PdfGradient gradient,
     double alpha,
   ) {
     if (gradient.isRadial || gradient.coords.length < 4) {
@@ -673,7 +665,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
 
     final contours = flatten(
       path,
-      matrix: PdfMatrix.identity,
+      matrix: graphics.PdfMatrix.identity,
       closeOpenContours: true,
     );
     if (contours.isEmpty) return;
@@ -801,7 +793,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   FillCoverageMask buildFillCoverageMask(
     IntRect bounds,
     List<List<Point>> contours,
-    PdfFillRule rule,
+    graphics.PdfFillRule rule,
   ) {
     final mask = FillCoverageMask(bounds);
     if (clip.paths.isEmpty) {
@@ -818,7 +810,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     FillCoverageMask mask,
     IntRect bounds,
     List<List<Point>> contours,
-    PdfFillRule rule,
+    graphics.PdfFillRule rule,
   ) {
     for (var py = bounds.top - 1; py <= bounds.bottom; py++) {
       final y = py + 0.5;
@@ -833,7 +825,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     FillCoverageMask mask,
     IntRect bounds,
     List<List<Point>> contours,
-    PdfFillRule rule,
+    graphics.PdfFillRule rule,
   ) {
     final events = <ScanlineIntersection>[];
     final clipBounds = clip.bounds;
@@ -861,7 +853,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
       if (events.isEmpty) continue;
       events.sort((a, b) => a.x.compareTo(b.x));
 
-      if (rule == PdfFillRule.evenOdd) {
+      if (rule == graphics.PdfFillRule.evenOdd) {
         var inside = false;
         var spanStart = 0.0;
         for (final event in events) {
@@ -937,7 +929,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     int px,
     int py,
     List<List<Point>> contours,
-    PdfFillRule rule,
+    graphics.PdfFillRule rule,
   ) {
     var coveredSamples = 0;
     for (var sy = 0; sy < antiAliasSamplesPerAxis; sy++) {
@@ -952,11 +944,11 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
 
   bool fillCoversPoint(
     List<List<Point>> contours,
-    PdfFillRule rule,
+    graphics.PdfFillRule rule,
     double x,
     double y,
   ) {
-    final inside = rule == PdfFillRule.evenOdd
+    final inside = rule == graphics.PdfFillRule.evenOdd
         ? containsEvenOdd(contours, x, y)
         : containsNonZero(contours, x, y);
     return inside && clip.contains(x, y);
@@ -986,11 +978,11 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     );
   }
 
-  String colorDetails(PdfColor color, double alpha) =>
+  String colorDetails(graphics.PdfColor color, double alpha) =>
       'rgb=${f(color.red)},${f(color.green)},${f(color.blue)} '
       'alpha=${f(alpha)}';
 
-  String gradientLineDetails(PdfGradient gradient) {
+  String gradientLineDetails(graphics.PdfGradient gradient) {
     final coords = gradient.coords;
     if (coords.length < 4) return '(none)';
     final matrix = gradient.transform;
@@ -1026,7 +1018,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     return bounds?.toTraceRegion() ?? const PdfRenderTraceRegion(0, 0, 0, 0);
   }
 
-  PdfRenderTraceRegion textRunTraceRegion(PdfTextRun run) {
+  PdfRenderTraceRegion textRunTraceRegion(graphics.PdfTextRun run) {
     final matrix = run.transform.concat(transform);
     final corners = [
       Point(matrix.transformX(0, -0.25), matrix.transformY(0, -0.25)),
@@ -1048,8 +1040,8 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }
 
   List<List<Point>> flatten(
-    PdfPath path, {
-    PdfMatrix? matrix,
+    graphics.PdfPath path, {
+    graphics.PdfMatrix? matrix,
     bool closeOpenContours = false,
   }) {
     return flattenPath(

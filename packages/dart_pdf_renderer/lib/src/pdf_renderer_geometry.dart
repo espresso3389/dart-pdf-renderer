@@ -7,21 +7,7 @@ import 'package:image/image.dart' as image;
 import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
 import 'package:pdf_cos/pdf_cos.dart' as cos;
 import 'package:pdf_document/pdf_document.dart';
-import 'package:pdf_graphics/pdf_graphics.dart'
-    hide
-        PdfBeginGroupCommand,
-        PdfClipPathCommand,
-        PdfDrawImageCommand,
-        PdfDrawTextCommand,
-        PdfEndGroupCommand,
-        PdfFillMeshCommand,
-        PdfFillPathCommand,
-        PdfFillPathGradientCommand,
-        PdfRestoreCommand,
-        PdfSaveCommand,
-        PdfSetBlendModeCommand,
-        PdfStrokePathCommand,
-        RecordingPdfDevice;
+import 'package:pdf_graphics/pdf_graphics.dart' as graphics;
 import 'pdf_display_command.dart';
 import 'pdfium_cmyk.dart';
 import 'pdf_renderer.dart';
@@ -230,7 +216,7 @@ class ClipState {
       return false;
     }
     for (final path in paths) {
-      final inside = path.rule == PdfFillRule.evenOdd
+      final inside = path.rule == graphics.PdfFillRule.evenOdd
           ? containsEvenOdd(path.contours, x, y)
           : containsNonZero(path.contours, x, y);
       if (!inside) return false;
@@ -241,7 +227,7 @@ class ClipState {
   ClipState intersect(
     IntRect bounds, {
     required List<List<Point>> contours,
-    required PdfFillRule rule,
+    required graphics.PdfFillRule rule,
   }) => ClipState(
     this.bounds.intersect(bounds),
     paths: [...paths, ClipPath(contours, rule)],
@@ -255,7 +241,7 @@ class ClipPath {
   const ClipPath(this.contours, this.rule);
 
   final List<List<Point>> contours;
-  final PdfFillRule rule;
+  final graphics.PdfFillRule rule;
 }
 
 Point cubic(Point p0, Point p1, Point p2, Point p3, double t) {
@@ -282,8 +268,8 @@ int cubicFlattenSegmentCount(Point p0, Point p1, Point p2, Point p3) {
 }
 
 List<List<Point>> flattenPath(
-  PdfPath path, {
-  required PdfMatrix transform,
+  graphics.PdfPath path, {
+  required graphics.PdfMatrix transform,
   bool closeOpenContours = false,
 }) {
   final contours = <List<Point>>[];
@@ -305,18 +291,18 @@ List<List<Point>> flattenPath(
 
   for (final segment in path.segments) {
     switch (segment) {
-      case PdfMoveTo(:final x, :final y):
+      case graphics.PdfMoveTo(:final x, :final y):
         closeCurrentContour();
         current = <Point>[];
         contours.add(current);
         start = cursor = tx(x, y);
         current.add(cursor);
-      case PdfLineTo(:final x, :final y):
+      case graphics.PdfLineTo(:final x, :final y):
         current ??= <Point>[];
         if (!contours.contains(current)) contours.add(current);
         cursor = tx(x, y);
         current.add(cursor);
-      case PdfCubicTo():
+      case graphics.PdfCubicTo():
         if (cursor == null) break;
         current ??= <Point>[];
         if (!contours.contains(current)) contours.add(current);
@@ -329,7 +315,7 @@ List<List<Point>> flattenPath(
           current.add(cubic(p0, p1, p2, p3, i / segments));
         }
         cursor = p3;
-      case PdfClosePath():
+      case graphics.PdfClosePath():
         if (current != null && start != null) current.add(start);
         cursor = start;
     }

@@ -7,21 +7,7 @@ import 'package:image/image.dart' as image;
 import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
 import 'package:pdf_cos/pdf_cos.dart' as cos;
 import 'package:pdf_document/pdf_document.dart';
-import 'package:pdf_graphics/pdf_graphics.dart'
-    hide
-        PdfBeginGroupCommand,
-        PdfClipPathCommand,
-        PdfDrawImageCommand,
-        PdfDrawTextCommand,
-        PdfEndGroupCommand,
-        PdfFillMeshCommand,
-        PdfFillPathCommand,
-        PdfFillPathGradientCommand,
-        PdfRestoreCommand,
-        PdfSaveCommand,
-        PdfSetBlendModeCommand,
-        PdfStrokePathCommand,
-        RecordingPdfDevice;
+import 'package:pdf_graphics/pdf_graphics.dart' as graphics;
 import 'pdf_display_command.dart';
 import 'pdfium_cmyk.dart';
 import 'pdf_renderer.dart';
@@ -449,12 +435,12 @@ DecodedImage? applyImageSoftMask(
 
   final mask = decodePdfImageInternal(
     ImageDrawRequest(
-      PdfImageRequest(
+      graphics.PdfImageRequest(
         stream: smask,
-        transform: PdfMatrix.identity,
+        transform: graphics.PdfMatrix.identity,
         alpha: 1,
         isStencil: false,
-        stencilColor: const PdfColor(0, 0, 0),
+        stencilColor: const graphics.PdfColor(0, 0, 0),
         isInline: false,
       ),
       colorContext,
@@ -812,7 +798,7 @@ int sampleImageBox(
 }
 
 DecodedImage? decodeStencilImage(
-  PdfImageRequest request,
+  graphics.PdfImageRequest request,
   cos.CosDocument cosDocument,
   int width,
   int height,
@@ -925,16 +911,16 @@ class ImageColorSpace {
     this.iccProfile,
   });
 
-  factory ImageColorSpace.gray({IccProfile? iccProfile}) =>
+  factory ImageColorSpace.gray({graphics.IccProfile? iccProfile}) =>
       ImageColorSpace.internal(
         ImageColorSpaceKind.gray,
         iccProfile: iccProfile,
       );
 
-  factory ImageColorSpace.rgb({IccProfile? iccProfile}) =>
+  factory ImageColorSpace.rgb({graphics.IccProfile? iccProfile}) =>
       ImageColorSpace.internal(ImageColorSpaceKind.rgb, iccProfile: iccProfile);
 
-  factory ImageColorSpace.cmyk({IccProfile? iccProfile}) =>
+  factory ImageColorSpace.cmyk({graphics.IccProfile? iccProfile}) =>
       ImageColorSpace.internal(
         ImageColorSpaceKind.cmyk,
         iccProfile: iccProfile,
@@ -955,7 +941,7 @@ class ImageColorSpace {
   final ImageColorSpace? base;
   final Uint8List? lookup;
   final int highValue;
-  final IccProfile? iccProfile;
+  final graphics.IccProfile? iccProfile;
 
   int get inputComponents => switch (kind) {
     ImageColorSpaceKind.gray => iccProfile?.channels ?? 1,
@@ -1073,7 +1059,7 @@ class ImageColorSpace {
 
 int unitToByte(double value) => (value.clamp(0, 1) * 255).round();
 
-ImageColorSpace? iccColorSpace(int components, IccProfile profile) =>
+ImageColorSpace? iccColorSpace(int components, graphics.IccProfile profile) =>
     switch (components) {
       1 => ImageColorSpace.gray(iccProfile: profile),
       3 => ImageColorSpace.rgb(iccProfile: profile),
@@ -1089,7 +1075,7 @@ ImageColorSpace? deviceColorSpaceForComponents(int components) =>
       _ => null,
     };
 
-IccProfile? parseIccProfile(
+graphics.IccProfile? parseIccProfile(
   cos.CosDocument cosDocument,
   cos.CosStream profile,
 ) {
@@ -1101,7 +1087,7 @@ IccProfile? parseIccProfile(
       iccProfileCache[profile] = const CachedIccProfile(null);
       return null;
     }
-    final parsed = IccProfile.parse(bytes);
+    final parsed = graphics.IccProfile.parse(bytes);
     iccProfileCache[profile] = CachedIccProfile(parsed);
     return parsed;
   } on Exception {
@@ -1150,7 +1136,7 @@ final iccProfileCache = Expando<CachedIccProfile>('dart_pdf_renderer.icc');
 class CachedIccProfile {
   const CachedIccProfile(this.profile);
 
-  final IccProfile? profile;
+  final graphics.IccProfile? profile;
 }
 
 const maxIccTransformCacheEntries = 1 << 20;
@@ -1159,7 +1145,7 @@ class IccColorTransform {
   IccColorTransform(this.profile)
     : values = List<double>.filled(profile.channels, 0, growable: false);
 
-  final IccProfile profile;
+  final graphics.IccProfile profile;
   final List<double> values;
   final cache = <int, int>{};
 

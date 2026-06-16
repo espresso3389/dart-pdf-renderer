@@ -7,21 +7,7 @@ import 'package:image/image.dart' as image;
 import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
 import 'package:pdf_cos/pdf_cos.dart' as cos;
 import 'package:pdf_document/pdf_document.dart';
-import 'package:pdf_graphics/pdf_graphics.dart'
-    hide
-        PdfBeginGroupCommand,
-        PdfClipPathCommand,
-        PdfDrawImageCommand,
-        PdfDrawTextCommand,
-        PdfEndGroupCommand,
-        PdfFillMeshCommand,
-        PdfFillPathCommand,
-        PdfFillPathGradientCommand,
-        PdfRestoreCommand,
-        PdfSaveCommand,
-        PdfSetBlendModeCommand,
-        PdfStrokePathCommand,
-        RecordingPdfDevice;
+import 'package:pdf_graphics/pdf_graphics.dart' as graphics;
 import 'pdf_display_command.dart';
 import 'pdfium_cmyk.dart';
 import 'pdf_renderer.dart';
@@ -33,14 +19,14 @@ import 'pdf_renderer_graphics.dart';
 import 'pdf_renderer_image.dart';
 import 'pdf_renderer_models.dart';
 
-class RecordingPdfDevice implements PdfDevice {
+class RecordingPdfDevice implements graphics.PdfDevice {
   RecordingPdfDevice({
     required this.transform,
     required this.imageColorContexts,
     required this.documentImageColorContext,
   });
 
-  final PdfMatrix transform;
+  final graphics.PdfMatrix transform;
   final Map<cos.CosStream, ImageColorContext> imageColorContexts;
   final ImageColorContext documentImageColorContext;
   final commandStack = <List<PdfDisplayCommand>>[<PdfDisplayCommand>[]];
@@ -62,7 +48,12 @@ class RecordingPdfDevice implements PdfDevice {
   }
 
   @override
-  void fillPath(PdfPath path, PdfColor color, PdfFillRule rule, double alpha) {
+  void fillPath(
+    graphics.PdfPath path,
+    graphics.PdfColor color,
+    graphics.PdfFillRule rule,
+    double alpha,
+  ) {
     final transformed = transformPath(path, transform);
     addCommand(
       PdfFillPathCommand(
@@ -77,9 +68,9 @@ class RecordingPdfDevice implements PdfDevice {
 
   @override
   void fillPathGradient(
-    PdfPath path,
-    PdfFillRule rule,
-    PdfGradient gradient,
+    graphics.PdfPath path,
+    graphics.PdfFillRule rule,
+    graphics.PdfGradient gradient,
     double alpha,
   ) {
     final transformed = transformPath(path, transform);
@@ -95,16 +86,16 @@ class RecordingPdfDevice implements PdfDevice {
   }
 
   @override
-  void fillMesh(PdfMesh mesh, double alpha) {
+  void fillMesh(graphics.PdfMesh mesh, double alpha) {
     final transformed = transformMesh(mesh, transform);
     addCommand(PdfFillMeshCommand(transformed, alpha, meshBounds(transformed)));
   }
 
   @override
   void strokePath(
-    PdfPath path,
-    PdfColor color,
-    PdfStroke stroke,
+    graphics.PdfPath path,
+    graphics.PdfColor color,
+    graphics.PdfStroke stroke,
     double alpha,
   ) {
     final transformed = transformPath(path, transform);
@@ -121,12 +112,12 @@ class RecordingPdfDevice implements PdfDevice {
   }
 
   @override
-  void clipPath(PdfPath path, PdfFillRule rule) {
+  void clipPath(graphics.PdfPath path, graphics.PdfFillRule rule) {
     addCommand(PdfClipPathCommand(transformPath(path, transform), rule));
   }
 
   @override
-  void drawText(PdfTextRun run) {
+  void drawText(graphics.PdfTextRun run) {
     final transformed = transformTextRun(run, transform);
     if (run.invisible) {
       addCommand(PdfDrawTextCommand(transformed, null));
@@ -138,7 +129,7 @@ class RecordingPdfDevice implements PdfDevice {
   }
 
   @override
-  void drawImage(PdfImageRequest request) {
+  void drawImage(graphics.PdfImageRequest request) {
     final transformed = transformImageDrawRequest(
       ImageDrawRequest(
         request,
@@ -152,7 +143,7 @@ class RecordingPdfDevice implements PdfDevice {
   }
 
   @override
-  void setBlendMode(PdfBlendMode mode) {
+  void setBlendMode(graphics.PdfBlendMode mode) {
     addCommand(PdfSetBlendModeCommand(mode));
   }
 
