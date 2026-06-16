@@ -1,7 +1,40 @@
-part of 'pdf_renderer.dart';
+// ignore_for_file: unused_import, implementation_imports
 
-class _PdfPageDisplayList {
-  const _PdfPageDisplayList(this.commands);
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:image/image.dart' as image;
+import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
+import 'package:pdf_cos/pdf_cos.dart' as cos;
+import 'package:pdf_document/pdf_document.dart';
+import 'package:pdf_graphics/pdf_graphics.dart'
+    hide
+        PdfBeginGroupCommand,
+        PdfClipPathCommand,
+        PdfDrawImageCommand,
+        PdfDrawTextCommand,
+        PdfEndGroupCommand,
+        PdfFillMeshCommand,
+        PdfFillPathCommand,
+        PdfFillPathGradientCommand,
+        PdfRestoreCommand,
+        PdfSaveCommand,
+        PdfSetBlendModeCommand,
+        PdfStrokePathCommand,
+        RecordingPdfDevice;
+import 'pdf_display_command.dart';
+import 'pdfium_cmyk.dart';
+import 'pdf_renderer.dart';
+import 'pdf_renderer_direct_device.dart';
+import 'pdf_renderer_geometry.dart';
+import 'pdf_renderer_glyph.dart';
+import 'pdf_renderer_graphics.dart';
+import 'pdf_renderer_image.dart';
+import 'pdf_renderer_models.dart';
+import 'pdf_renderer_recording_device.dart';
+
+class PdfPageDisplayList {
+  const PdfPageDisplayList(this.commands);
 
   final List<PdfDisplayCommand> commands;
 
@@ -12,10 +45,7 @@ class _PdfPageDisplayList {
         command.replay(device);
         if (stopwatch != null) {
           stopwatch.stop();
-          device.timing!._addCommandTime(
-            command,
-            stopwatch.elapsedMicroseconds,
-          );
+          device.timing!.addCommandTime(command, stopwatch.elapsedMicroseconds);
         }
       } else {
         device.timing?.culledCommands++;
@@ -24,15 +54,15 @@ class _PdfPageDisplayList {
   }
 }
 
-class _PdfPageDisplayListKey {
-  const _PdfPageDisplayListKey(this.page, {required this.annotations});
+class PdfPageDisplayListKey {
+  const PdfPageDisplayListKey(this.page, {required this.annotations});
 
-  final _PdfPageCacheKey page;
+  final PdfPageCacheKey page;
   final bool annotations;
 
   @override
   bool operator ==(Object other) =>
-      other is _PdfPageDisplayListKey &&
+      other is PdfPageDisplayListKey &&
       other.page == page &&
       other.annotations == annotations;
 
@@ -47,15 +77,15 @@ class _PdfPageDisplayListKey {
 /// identity we have. For direct page dictionaries, object identity is the
 /// fallback. If editing replaces a page dictionary with a new object, it gets a
 /// new cache key and old entries can be evicted normally.
-class _PdfPageCacheKey {
-  const _PdfPageCacheKey(this.reference, this.dictionary);
+class PdfPageCacheKey {
+  const PdfPageCacheKey(this.reference, this.dictionary);
 
   final cos.CosReference? reference;
   final cos.CosDictionary dictionary;
 
   @override
   bool operator ==(Object other) {
-    if (other is! _PdfPageCacheKey) return false;
+    if (other is! PdfPageCacheKey) return false;
     final ref = reference;
     final otherRef = other.reference;
     if (ref != null || otherRef != null) return ref == otherRef;
@@ -66,12 +96,12 @@ class _PdfPageCacheKey {
   int get hashCode => reference?.hashCode ?? identityHashCode(dictionary);
 }
 
-Map<cos.CosStream, _ImageColorContext> _collectImageColorContexts(
+Map<cos.CosStream, ImageColorContext> collectImageColorContexts(
   PdfPage page, {
   required bool annotations,
-  required _ImageColorContext documentImageColorContext,
+  required ImageColorContext documentImageColorContext,
 }) {
-  final collector = _ImageColorContextCollector(
+  final collector = ImageColorContextCollector(
     page.document.cos,
     documentImageColorContext,
   );
@@ -80,21 +110,20 @@ Map<cos.CosStream, _ImageColorContext> _collectImageColorContexts(
   return collector.imageContexts;
 }
 
-class _ImageColorContextCollector {
-  _ImageColorContextCollector(this.cosDocument, this.documentImageColorContext);
+class ImageColorContextCollector {
+  ImageColorContextCollector(this.cosDocument, this.documentImageColorContext);
 
   final cos.CosDocument cosDocument;
-  final _ImageColorContext documentImageColorContext;
-  final imageContexts = Map<cos.CosStream, _ImageColorContext>.identity();
-  final _resourceContexts =
-      Map<cos.CosDictionary, _ImageColorContext>.identity();
-  final _visitedForms = <cos.CosStream>{};
+  final ImageColorContext documentImageColorContext;
+  final imageContexts = Map<cos.CosStream, ImageColorContext>.identity();
+  final resourceContexts = Map<cos.CosDictionary, ImageColorContext>.identity();
+  final visitedForms = <cos.CosStream>{};
 
   void walkPage(PdfPage page) {
-    _walkOperations(
+    walkOperations(
       ContentStreamParser.parse(page.contentBytes()),
       page.resources,
-      _contextForResources(page.resources),
+      contextForResources(page.resources),
       0,
     );
   }
@@ -105,24 +134,24 @@ class _ImageColorContextCollector {
       if (annotation.subtype == 'Popup') continue;
       final form = annotation.normalAppearance;
       if (form == null) continue;
-      _walkForm(form, page.resources, _contextForResources(page.resources), 0);
+      walkForm(form, page.resources, contextForResources(page.resources), 0);
     }
   }
 
-  _ImageColorContext _contextForResources(cos.CosDictionary resources) =>
-      _resourceContexts.putIfAbsent(
+  ImageColorContext contextForResources(cos.CosDictionary resources) =>
+      resourceContexts.putIfAbsent(
         resources,
-        () => _ImageColorContext.fromResources(
+        () => ImageColorContext.fromResources(
           cosDocument,
           resources,
           parent: documentImageColorContext,
         ),
       );
 
-  void _walkOperations(
+  void walkOperations(
     List<ContentOperation> operations,
     cos.CosDictionary resources,
-    _ImageColorContext context,
+    ImageColorContext context,
     int depth,
   ) {
     if (depth > 16) return;
@@ -134,34 +163,34 @@ class _ImageColorContextCollector {
       if (xObjectGroup is! cos.CosDictionary) continue;
       final xObject = cosDocument.resolve(xObjectGroup[name.value]);
       if (xObject is! cos.CosStream) continue;
-      final subtype = _nameValue(
+      final subtype = nameValue(
         cosDocument.resolve(xObject.dictionary['Subtype']),
       );
       if (subtype == 'Image') {
         imageContexts.putIfAbsent(xObject, () => context);
       } else if (subtype == 'Form') {
-        _walkForm(xObject, resources, context, depth + 1);
+        walkForm(xObject, resources, context, depth + 1);
       }
     }
   }
 
-  void _walkForm(
+  void walkForm(
     cos.CosStream form,
     cos.CosDictionary outerResources,
-    _ImageColorContext outerContext,
+    ImageColorContext outerContext,
     int depth,
   ) {
-    if (!_visitedForms.add(form)) return;
+    if (!visitedForms.add(form)) return;
     final innerResources = cosDocument.resolve(form.dictionary['Resources']);
     final resources = innerResources is cos.CosDictionary
         ? innerResources
         : outerResources;
     final context = innerResources is cos.CosDictionary
-        ? _contextForResources(innerResources)
+        ? contextForResources(innerResources)
         : outerContext;
     try {
       final content = cosDocument.decodeStreamData(form);
-      _walkOperations(
+      walkOperations(
         ContentStreamParser.parse(content),
         resources,
         context,

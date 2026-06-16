@@ -1,19 +1,52 @@
-part of 'pdf_renderer.dart';
+// ignore_for_file: unused_import, implementation_imports
+
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:image/image.dart' as image;
+import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
+import 'package:pdf_cos/pdf_cos.dart' as cos;
+import 'package:pdf_document/pdf_document.dart';
+import 'package:pdf_graphics/pdf_graphics.dart'
+    hide
+        PdfBeginGroupCommand,
+        PdfClipPathCommand,
+        PdfDrawImageCommand,
+        PdfDrawTextCommand,
+        PdfEndGroupCommand,
+        PdfFillMeshCommand,
+        PdfFillPathCommand,
+        PdfFillPathGradientCommand,
+        PdfRestoreCommand,
+        PdfSaveCommand,
+        PdfSetBlendModeCommand,
+        PdfStrokePathCommand,
+        RecordingPdfDevice;
+import 'pdf_display_command.dart';
+import 'pdfium_cmyk.dart';
+import 'pdf_renderer.dart';
+import 'pdf_renderer_display_list.dart';
+import 'pdf_renderer_geometry.dart';
+import 'pdf_renderer_glyph.dart';
+import 'pdf_renderer_graphics.dart';
+import 'pdf_renderer_image.dart';
+import 'pdf_renderer_models.dart';
+import 'pdf_renderer_recording_device.dart';
 
 class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
-  PdfDirectPdfDevice._(
-    _RgbaSurface surface, {
+  PdfDirectPdfDevice.internal(
+    RgbaSurface surface, {
     required this.cosDocument,
     required PdfMatrix transform,
     this.glyphRasterCache,
     this.imageDecodeCache,
     this.trace,
     this.timing,
-  }) : _surfaceStack = [surface],
-       _transformStack = [transform],
-       _clipStack = [_ClipState(_IntRect(0, 0, surface.width, surface.height))];
+  }) : surfaceStack = [surface],
+       transformStack = [transform],
+       clipStack = [ClipState(IntRect(0, 0, surface.width, surface.height))];
 
-  final List<_RgbaSurface> _surfaceStack;
+  final List<RgbaSurface> surfaceStack;
 
   /// The COS document used to resolve and decode page resources.
   final cos.CosDocument cosDocument;
@@ -29,29 +62,29 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
 
   /// Optional timing collector for rendered operations.
   final PdfRenderTiming? timing;
-  final List<PdfMatrix> _transformStack;
-  final List<_ClipState> _clipStack;
-  final List<double> _groupAlphaStack = [];
+  final List<PdfMatrix> transformStack;
+  final List<ClipState> clipStack;
+  final List<double> groupAlphaStack = [];
 
-  _RgbaSurface get _surface => _surfaceStack.last;
-  PdfMatrix get _transform => _transformStack.last;
-  _ClipState get _clip => _clipStack.last;
+  RgbaSurface get surface => surfaceStack.last;
+  PdfMatrix get transform => transformStack.last;
+  ClipState get clip => clipStack.last;
 
   @override
   void save() {
-    _transformStack.add(_transform);
-    _clipStack.add(_clip);
+    transformStack.add(transform);
+    clipStack.add(clip);
   }
 
   @override
   void restore() {
-    if (_transformStack.length > 1) _transformStack.removeLast();
-    if (_clipStack.length > 1) _clipStack.removeLast();
+    if (transformStack.length > 1) transformStack.removeLast();
+    if (clipStack.length > 1) clipStack.removeLast();
   }
 
   @override
   void fillPath(PdfPath path, PdfColor color, PdfFillRule rule, double alpha) {
-    _fillPath(path, color, rule, alpha, operation: 'fillPath');
+    fillPathInternal(path, color, rule, alpha, operation: 'fillPath');
   }
 
   @override
@@ -61,10 +94,10 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     PdfGradient gradient,
     double alpha,
   ) {
-    _fillPathGradient(
-      _transformPath(path, _transform),
+    fillPathGradientInternal(
+      transformPath(path, transform),
       rule,
-      _transformGradient(gradient, _transform),
+      transformGradient(gradient, transform),
       alpha,
     );
   }
@@ -89,13 +122,13 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
         const PdfClosePath(),
       ],
     ]);
-    _fillPath(
+    fillPathInternal(
       path,
       mesh.averageColor,
       PdfFillRule.nonzero,
       alpha,
       operation: 'fillMesh',
-      details: 'triangles=${mesh.triangles.length ~/ 3} alpha=${_f(alpha)}',
+      details: 'triangles=${mesh.triangles.length ~/ 3} alpha=${f(alpha)}',
     );
   }
 
@@ -106,47 +139,47 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     PdfStroke stroke,
     double alpha,
   ) {
-    final contours = _flatten(path);
+    final contours = flatten(path);
     if (contours.isEmpty) return;
-    final bounds = _boundsOf(contours)?.intersect(_clip.bounds);
+    final bounds = boundsOf(contours)?.intersect(clip.bounds);
     if (bounds != null && !bounds.isEmpty) {
-      _trace(
+      traceOperation(
         'strokePath',
         bounds,
-        '${_colorDetails(color, alpha)} width=${_f(stroke.width)} '
-            'dash=${stroke.dashArray.length} clip=${_clip.bounds}',
+        '${colorDetails(color, alpha)} width=${f(stroke.width)} '
+            'dash=${stroke.dashArray.length} clip=${clip.bounds}',
       );
     }
     final r = (color.red.clamp(0, 1) * 255).round();
     final g = (color.green.clamp(0, 1) * 255).round();
     final b = (color.blue.clamp(0, 1) * 255).round();
     final a = (alpha.clamp(0, 1) * 255).round();
-    final width = math.max(1.0, stroke.width * _transform.scaleFactor);
+    final width = math.max(1.0, stroke.width * transform.scaleFactor);
     final dashes = [
       for (final dash in stroke.dashArray)
-        if (dash > 0) dash * _transform.scaleFactor,
+        if (dash > 0) dash * transform.scaleFactor,
     ];
-    final phase = stroke.dashPhase * _transform.scaleFactor;
+    final phase = stroke.dashPhase * transform.scaleFactor;
     for (final contour in contours) {
-      _strokeContour(contour, width, dashes, phase, r, g, b, a);
+      strokeContour(contour, width, dashes, phase, r, g, b, a);
     }
   }
 
   @override
   void clipPath(PdfPath path, PdfFillRule rule) {
-    final contours = _flatten(path, closeOpenContours: true);
-    final bounds = _boundsOf(contours);
+    final contours = flatten(path, closeOpenContours: true);
+    final bounds = boundsOf(contours);
     if (bounds == null) return;
-    _trace(
+    traceOperation(
       'clipPath',
-      bounds.intersect(_clip.bounds),
-      'rule=${rule.name} previousClip=${_clip.bounds}',
+      bounds.intersect(clip.bounds),
+      'rule=${rule.name} previousClip=${clip.bounds}',
     );
-    if (_isAxisAlignedRectangle(contours)) {
-      _clipStack[_clipStack.length - 1] = _clip.intersectBounds(bounds);
+    if (isAxisAlignedRectangle(contours)) {
+      clipStack[clipStack.length - 1] = clip.intersectBounds(bounds);
       return;
     }
-    _clipStack[_clipStack.length - 1] = _clip.intersect(
+    clipStack[clipStack.length - 1] = clip.intersect(
       bounds,
       contours: contours,
       rule: rule,
@@ -156,23 +189,23 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   @override
   void drawText(PdfTextRun run) {
     if (run.invisible) {
-      _traceRegion(
+      traceRegion(
         'skipText',
-        _textRunTraceRegion(run),
-        'reason=invisible font=${run.fontName} text="${_snippet(run.text)}"',
+        textRunTraceRegion(run),
+        'reason=invisible font=${run.fontName} text="${snippet(run.text)}"',
       );
       return;
     }
     if (run.glyphs == null) {
-      _traceRegion(
+      traceRegion(
         'skipText',
-        _textRunTraceRegion(run),
-        'reason=noOutlines font=${run.fontName} size=${_f(run.fontSize)} '
-            'text="${_snippet(run.text)}"',
+        textRunTraceRegion(run),
+        'reason=noOutlines font=${run.fontName} size=${f(run.fontSize)} '
+            'text="${snippet(run.text)}"',
       );
       return;
     }
-    final glyphTransform = run.transform.concat(_transform);
+    final glyphTransform = run.transform.concat(transform);
     for (final glyph in run.glyphs!) {
       final outline = glyph.outline;
       if (outline == null) continue;
@@ -180,9 +213,9 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
         glyph.offset,
         0,
       ).concat(glyphTransform);
-      if (glyphRasterCache?._paintGlyph(
-            surface: _surface,
-            clip: _clip,
+      if (glyphRasterCache?.paintGlyph(
+            surface: surface,
+            clip: clip,
             outline: outline,
             transform: shifted,
             color: run.color,
@@ -192,59 +225,58 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
           false) {
         continue;
       }
-      _fillPathWithTransform(
+      fillPathWithTransform(
         outline,
         run.color,
         PdfFillRule.nonzero,
         1,
         shifted,
         operation: 'drawText',
-        details:
-            'glyphOffset=${_f(glyph.offset)} ${_colorDetails(run.color, 1)}',
+        details: 'glyphOffset=${f(glyph.offset)} ${colorDetails(run.color, 1)}',
       );
     }
   }
 
   @override
   void drawImage(PdfImageRequest request) {
-    drawImageRequest(_ImageDrawRequest(request, _ImageColorContext.device));
+    drawImageRequest(ImageDrawRequest(request, ImageColorContext.device));
   }
 
   @override
   void drawImageRequest(Object drawRequest) {
-    drawRequest as _ImageDrawRequest;
+    drawRequest as ImageDrawRequest;
     final request = drawRequest.request;
-    final decoded = _decodeImage(drawRequest);
+    final decoded = decodeImage(drawRequest);
     if (decoded == null) return;
-    final matrix = request.transform.concat(_transform);
+    final matrix = request.transform.concat(transform);
     final inverse = matrix.inverted();
     if (inverse == null) return;
 
     final corners = [
-      _Point(matrix.transformX(0, 0), matrix.transformY(0, 0)),
-      _Point(matrix.transformX(1, 0), matrix.transformY(1, 0)),
-      _Point(matrix.transformX(1, 1), matrix.transformY(1, 1)),
-      _Point(matrix.transformX(0, 1), matrix.transformY(0, 1)),
+      Point(matrix.transformX(0, 0), matrix.transformY(0, 0)),
+      Point(matrix.transformX(1, 0), matrix.transformY(1, 0)),
+      Point(matrix.transformX(1, 1), matrix.transformY(1, 1)),
+      Point(matrix.transformX(0, 1), matrix.transformY(0, 1)),
     ];
-    final bounds = _boundsOf([corners])?.intersect(_clip.bounds);
+    final bounds = boundsOf([corners])?.intersect(clip.bounds);
     if (bounds == null || bounds.isEmpty) return;
-    _trace(
+    traceOperation(
       'drawImage',
       bounds,
-      'source=${decoded.width}x${decoded.height} alpha=${_f(request.alpha)} '
-          'clip=${_clip.bounds}',
+      'source=${decoded.width}x${decoded.height} alpha=${f(request.alpha)} '
+          'clip=${clip.bounds}',
     );
 
     final alpha = (request.alpha.clamp(0, 1) * 255).round();
-    final needsClip = _clip.paths.isNotEmpty;
+    final needsClip = clip.paths.isNotEmpty;
     if (!needsClip && alpha >= 255 && decoded.opaque) {
-      _drawOpaqueImageNoClip(bounds, inverse, decoded);
+      drawOpaqueImageNoClip(bounds, inverse, decoded);
       return;
     }
 
-    final dstPixels = _surface.pixels;
-    final dstWidth = _surface.width;
-    _surface.markDirty(bounds);
+    final dstPixels = surface.pixels;
+    final dstWidth = surface.width;
+    surface.markDirty(bounds);
     final srcPixels = decoded.rgba;
     final srcWidth = decoded.width;
     final srcHeight = decoded.height;
@@ -257,14 +289,14 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
       var uy = inverse.transformY(rowStartX, sy);
       var px = bounds.left;
       while (px < bounds.right) {
-        if (needsClip && !_clip.contains(px + 0.5, sy)) {
+        if (needsClip && !clip.contains(px + 0.5, sy)) {
           px++;
           ux += stepUx;
           uy += stepUy;
           continue;
         }
         if (ux >= 0 && ux <= 1 && uy >= 0 && uy <= 1) {
-          final sample = _sampleImageBilinear(
+          final sample = sampleImageBilinear(
             srcPixels,
             srcWidth,
             srcHeight,
@@ -301,14 +333,14 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     }
   }
 
-  void _drawOpaqueImageNoClip(
-    _IntRect bounds,
+  void drawOpaqueImageNoClip(
+    IntRect bounds,
     PdfMatrix inverse,
-    _DecodedImage decoded,
+    DecodedImage decoded,
   ) {
-    final dstPixels = _surface.pixels;
-    final dstWidth = _surface.width;
-    _surface.markDirty(bounds);
+    final dstPixels = surface.pixels;
+    final dstWidth = surface.width;
+    surface.markDirty(bounds);
     final srcPixels = decoded.rgba;
     final srcWidth = decoded.width;
     final srcHeight = decoded.height;
@@ -336,7 +368,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
         for (var px = bounds.left; px < bounds.right; px++) {
           if (ux >= 0 && ux <= 1) {
             final sample = useBoxFilter
-                ? _sampleImageBox(
+                ? sampleImageBox(
                     srcPixels,
                     srcWidth,
                     srcHeight,
@@ -345,7 +377,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
                     footprintX,
                     footprintY,
                   )
-                : _sampleImageBilinear(srcPixels, srcWidth, srcHeight, ux, uy);
+                : sampleImageBilinear(srcPixels, srcWidth, srcHeight, ux, uy);
             dstPixels[dstOffset] = sample & 0xff;
             dstPixels[dstOffset + 1] = (sample >>> 8) & 0xff;
             dstPixels[dstOffset + 2] = (sample >>> 16) & 0xff;
@@ -365,7 +397,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
       var dstOffset = (py * dstWidth + bounds.left) * 4;
       for (var px = bounds.left; px < bounds.right; px++) {
         if (ux >= 0 && ux <= 1 && uy >= 0 && uy <= 1) {
-          final sample = _sampleImageBilinear(
+          final sample = sampleImageBilinear(
             srcPixels,
             srcWidth,
             srcHeight,
@@ -386,25 +418,27 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
 
   @override
   void setBlendMode(PdfBlendMode mode) {
-    _trace('setBlendMode', _clip.bounds, mode.name);
+    traceOperation('setBlendMode', clip.bounds, mode.name);
   }
 
   @override
   void beginGroup(double alpha, {bool knockout = false}) {
-    _trace('beginGroup', _clip.bounds, 'alpha=${_f(alpha)} knockout=$knockout');
-    _groupAlphaStack.add(alpha.clamp(0, 1));
-    _surfaceStack.add(_RgbaSurface(_surface.width, _surface.height));
+    traceOperation(
+      'beginGroup',
+      clip.bounds,
+      'alpha=${f(alpha)} knockout=$knockout',
+    );
+    groupAlphaStack.add(alpha.clamp(0, 1));
+    surfaceStack.add(RgbaSurface(surface.width, surface.height));
   }
 
   @override
   void endGroup() {
-    if (_surfaceStack.length <= 1) return;
-    final layer = _surfaceStack.removeLast();
-    final alpha = _groupAlphaStack.isEmpty
-        ? 1.0
-        : _groupAlphaStack.removeLast();
-    _trace('endGroup', _clip.bounds, 'alpha=${_f(alpha)}');
-    final parent = _surface;
+    if (surfaceStack.length <= 1) return;
+    final layer = surfaceStack.removeLast();
+    final alpha = groupAlphaStack.isEmpty ? 1.0 : groupAlphaStack.removeLast();
+    traceOperation('endGroup', clip.bounds, 'alpha=${f(alpha)}');
+    final parent = surface;
     final dirtyBounds = layer.dirtyBounds;
     if (dirtyBounds == null || dirtyBounds.isEmpty) return;
     for (var y = dirtyBounds.top; y < dirtyBounds.bottom; y++) {
@@ -426,8 +460,8 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
 
   @override
   void beginSoftMasked() {
-    _trace('beginSoftMasked', _clip.bounds);
-    _surfaceStack.add(_RgbaSurface(_surface.width, _surface.height));
+    traceOperation('beginSoftMasked', clip.bounds);
+    surfaceStack.add(RgbaSurface(surface.width, surface.height));
   }
 
   @override
@@ -439,22 +473,22 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     double transferScale = 1,
     double transferOffset = 0,
   }) {
-    _traceRegion(
+    traceRegion(
       'endSoftMasked',
-      _rectToTraceRegion(backdrop),
-      'luminosity=$luminosity backdropLuminance=${_f(backdropLuminance)} '
-          'transferScale=${_f(transferScale)} '
-          'transferOffset=${_f(transferOffset)}',
+      rectToTraceRegion(backdrop),
+      'luminosity=$luminosity backdropLuminance=${f(backdropLuminance)} '
+          'transferScale=${f(transferScale)} '
+          'transferOffset=${f(transferOffset)}',
     );
-    if (_surfaceStack.length <= 1) {
+    if (surfaceStack.length <= 1) {
       return;
     }
-    final content = _surfaceStack.removeLast();
-    final mask = _RgbaSurface(_surface.width, _surface.height);
-    _surfaceStack.add(mask);
+    final content = surfaceStack.removeLast();
+    final mask = RgbaSurface(surface.width, surface.height);
+    surfaceStack.add(mask);
     drawMask();
-    _surfaceStack.removeLast();
-    _compositeSoftMaskedContent(
+    surfaceStack.removeLast();
+    compositeSoftMaskedContent(
       content,
       mask,
       luminosity: luminosity,
@@ -464,9 +498,9 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     );
   }
 
-  void _compositeSoftMaskedContent(
-    _RgbaSurface content,
-    _RgbaSurface mask, {
+  void compositeSoftMaskedContent(
+    RgbaSurface content,
+    RgbaSurface mask, {
     required bool luminosity,
     required double backdropLuminance,
     required double transferScale,
@@ -474,7 +508,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   }) {
     final dirtyBounds = content.dirtyBounds;
     if (dirtyBounds == null || dirtyBounds.isEmpty) return;
-    final parent = _surface;
+    final parent = surface;
     final contentPixels = content.pixels;
     final maskPixels = mask.pixels;
     final backdrop = backdropLuminance.clamp(0.0, 1.0);
@@ -486,7 +520,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
         final maskAlpha = maskPixels[offset + 3] / 255.0;
         final rawMask = luminosity
             ? backdrop * (1 - maskAlpha) +
-                  _luminance(
+                  luminance(
                         maskPixels[offset],
                         maskPixels[offset + 1],
                         maskPixels[offset + 2],
@@ -511,7 +545,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     }
   }
 
-  void _fillPath(
+  void fillPathInternal(
     PdfPath path,
     PdfColor color,
     PdfFillRule rule,
@@ -519,18 +553,18 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     required String operation,
     String? details,
   }) {
-    _fillPathWithTransform(
+    fillPathWithTransform(
       path,
       color,
       rule,
       alpha,
-      _transform,
+      transform,
       operation: operation,
       details: details,
     );
   }
 
-  void _fillPathWithTransform(
+  void fillPathWithTransform(
     PdfPath path,
     PdfColor color,
     PdfFillRule rule,
@@ -539,36 +573,32 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     required String operation,
     String? details,
   }) {
-    final contours = _flatten(
-      path,
-      transform: transform,
-      closeOpenContours: true,
-    );
+    final contours = flatten(path, matrix: transform, closeOpenContours: true);
     if (contours.isEmpty) return;
-    final bounds = _boundsOf(contours)?.intersect(_clip.bounds);
+    final bounds = boundsOf(contours)?.intersect(clip.bounds);
     if (bounds == null || bounds.isEmpty) return;
-    _trace(
+    traceOperation(
       operation,
       bounds,
       details ??
-          '${_colorDetails(color, alpha)} rule=${rule.name} '
-              'clip=${_clip.bounds}',
+          '${colorDetails(color, alpha)} rule=${rule.name} '
+              'clip=${clip.bounds}',
     );
 
     final r = (color.red.clamp(0, 1) * 255).round();
     final g = (color.green.clamp(0, 1) * 255).round();
     final b = (color.blue.clamp(0, 1) * 255).round();
     final a = (alpha.clamp(0, 1) * 255).round();
-    if (_clip.paths.isEmpty && _isPixelAlignedRectangle(contours, bounds)) {
-      _fillRectangle(bounds, r, g, b, a);
+    if (clip.paths.isEmpty && isPixelAlignedRectangle(contours, bounds)) {
+      fillRectangle(bounds, r, g, b, a);
       return;
     }
-    final mask = _buildFillCoverageMask(bounds, contours, rule);
-    final dstPixels = _surface.pixels;
-    final dstWidth = _surface.width;
-    _surface.markDirty(bounds);
-    final maskValues = mask._values;
-    final maskBoundary = mask._boundary;
+    final mask = buildFillCoverageMask(bounds, contours, rule);
+    final dstPixels = surface.pixels;
+    final dstWidth = surface.width;
+    surface.markDirty(bounds);
+    final maskValues = mask.values;
+    final maskBoundary = mask.boundary;
     final maskWidth = mask.width;
     final maskOriginX = mask.originX;
     final maskOriginY = mask.originY;
@@ -602,9 +632,9 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
           dstOffset += 4;
           continue;
         }
-        final coveredSamples = _fillCoverageSamples(px, py, contours, rule);
+        final coveredSamples = fillCoverageSamples(px, py, contours, rule);
         if (coveredSamples != 0) {
-          final coverageAlpha = (a * coveredSamples * _antiAliasSampleScale)
+          final coverageAlpha = (a * coveredSamples * antiAliasSampleScale)
               .round();
           final inv = 255 - coverageAlpha;
           dstPixels[dstOffset] =
@@ -623,51 +653,51 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     }
   }
 
-  void _fillPathGradient(
+  void fillPathGradientInternal(
     PdfPath path,
     PdfFillRule rule,
     PdfGradient gradient,
     double alpha,
   ) {
     if (gradient.isRadial || gradient.coords.length < 4) {
-      _fillPath(
+      fillPathInternal(
         path,
         gradient.averageColor,
         rule,
         alpha,
         operation: 'fillPathGradient',
-        details: 'alpha=${_f(alpha)} rule=${rule.name} fallback=averageColor',
+        details: 'alpha=${f(alpha)} rule=${rule.name} fallback=averageColor',
       );
       return;
     }
 
-    final contours = _flatten(
+    final contours = flatten(
       path,
-      transform: PdfMatrix.identity,
+      matrix: PdfMatrix.identity,
       closeOpenContours: true,
     );
     if (contours.isEmpty) return;
-    final bounds = _boundsOf(contours)?.intersect(_clip.bounds);
+    final bounds = boundsOf(contours)?.intersect(clip.bounds);
     if (bounds == null || bounds.isEmpty) return;
-    _trace(
+    traceOperation(
       'fillPathGradient',
       bounds,
-      'alpha=${_f(alpha)} rule=${rule.name} type=axial '
-          'coords=${gradient.coords.map(_f).join(',')} '
-          'line=${_gradientLineDetails(gradient)} '
-          'c0=${_colorDetails(gradient.colors.first, 1)} '
-          'cN=${_colorDetails(gradient.colors.last, 1)} '
-          'clip=${_clip.bounds}',
+      'alpha=${f(alpha)} rule=${rule.name} type=axial '
+          'coords=${gradient.coords.map(f).join(',')} '
+          'line=${gradientLineDetails(gradient)} '
+          'c0=${colorDetails(gradient.colors.first, 1)} '
+          'cN=${colorDetails(gradient.colors.last, 1)} '
+          'clip=${clip.bounds}',
     );
 
     final a = (alpha.clamp(0, 1) * 255).round();
     if (a <= 0) return;
-    final mask = _buildFillCoverageMask(bounds, contours, rule);
-    final dstPixels = _surface.pixels;
-    final dstWidth = _surface.width;
-    _surface.markDirty(bounds);
-    final maskValues = mask._values;
-    final maskBoundary = mask._boundary;
+    final mask = buildFillCoverageMask(bounds, contours, rule);
+    final dstPixels = surface.pixels;
+    final dstWidth = surface.width;
+    surface.markDirty(bounds);
+    final maskValues = mask.values;
+    final maskBoundary = mask.boundary;
     final maskWidth = mask.width;
     final maskOriginX = mask.originX;
     final maskOriginY = mask.originY;
@@ -680,7 +710,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
       for (var px = bounds.left; px < bounds.right; px++) {
         if (maskBoundary[maskOffset] == 0) {
           if (maskValues[maskOffset] != 0) {
-            final color = _axialGradientColorAt(gradient, px + 0.5, py + 0.5);
+            final color = axialGradientColorAt(gradient, px + 0.5, py + 0.5);
             if (color != null) {
               final r = (color.red.clamp(0, 1) * 255).round();
               final g = (color.green.clamp(0, 1) * 255).round();
@@ -706,11 +736,11 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
           dstOffset += 4;
           continue;
         }
-        final coveredSamples = _fillCoverageSamples(px, py, contours, rule);
+        final coveredSamples = fillCoverageSamples(px, py, contours, rule);
         if (coveredSamples != 0) {
-          final color = _axialGradientColorAt(gradient, px + 0.5, py + 0.5);
+          final color = axialGradientColorAt(gradient, px + 0.5, py + 0.5);
           if (color != null) {
-            final coverageAlpha = (a * coveredSamples * _antiAliasSampleScale)
+            final coverageAlpha = (a * coveredSamples * antiAliasSampleScale)
                 .round();
             final inv = 255 - coverageAlpha;
             final r = (color.red.clamp(0, 1) * 255).round();
@@ -733,13 +763,13 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     }
   }
 
-  void _fillRectangle(_IntRect bounds, int r, int g, int b, int a) {
+  void fillRectangle(IntRect bounds, int r, int g, int b, int a) {
     if (a <= 0) return;
-    final clipped = bounds.intersect(_clip.bounds);
+    final clipped = bounds.intersect(clip.bounds);
     if (clipped.isEmpty) return;
-    final dstPixels = _surface.pixels;
-    final dstWidth = _surface.width;
-    _surface.markDirty(clipped);
+    final dstPixels = surface.pixels;
+    final dstWidth = surface.width;
+    surface.markDirty(clipped);
     if (a >= 255) {
       for (var py = clipped.top; py < clipped.bottom; py++) {
         var dstOffset = (py * dstWidth + clipped.left) * 4;
@@ -768,45 +798,45 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     }
   }
 
-  _FillCoverageMask _buildFillCoverageMask(
-    _IntRect bounds,
-    List<List<_Point>> contours,
+  FillCoverageMask buildFillCoverageMask(
+    IntRect bounds,
+    List<List<Point>> contours,
     PdfFillRule rule,
   ) {
-    final mask = _FillCoverageMask(bounds);
-    if (_clip.paths.isEmpty) {
-      _buildFillCoverageMaskByScanline(mask, bounds, contours, rule);
+    final mask = FillCoverageMask(bounds);
+    if (clip.paths.isEmpty) {
+      buildFillCoverageMaskByScanline(mask, bounds, contours, rule);
     } else {
-      _buildFillCoverageMaskByPointTest(mask, bounds, contours, rule);
+      buildFillCoverageMaskByPointTest(mask, bounds, contours, rule);
     }
     mask.markBoundaryTransitions(bounds);
-    _markFillBoundaryPixels(mask, bounds, contours);
+    markFillBoundaryPixels(mask, bounds, contours);
     return mask;
   }
 
-  void _buildFillCoverageMaskByPointTest(
-    _FillCoverageMask mask,
-    _IntRect bounds,
-    List<List<_Point>> contours,
+  void buildFillCoverageMaskByPointTest(
+    FillCoverageMask mask,
+    IntRect bounds,
+    List<List<Point>> contours,
     PdfFillRule rule,
   ) {
     for (var py = bounds.top - 1; py <= bounds.bottom; py++) {
       final y = py + 0.5;
       for (var px = bounds.left - 1; px <= bounds.right; px++) {
         final x = px + 0.5;
-        mask.set(px, py, _fillCoversPoint(contours, rule, x, y));
+        mask.set(px, py, fillCoversPoint(contours, rule, x, y));
       }
     }
   }
 
-  void _buildFillCoverageMaskByScanline(
-    _FillCoverageMask mask,
-    _IntRect bounds,
-    List<List<_Point>> contours,
+  void buildFillCoverageMaskByScanline(
+    FillCoverageMask mask,
+    IntRect bounds,
+    List<List<Point>> contours,
     PdfFillRule rule,
   ) {
-    final events = <_ScanlineIntersection>[];
-    final clipBounds = _clip.bounds;
+    final events = <ScanlineIntersection>[];
+    final clipBounds = clip.bounds;
     final minX = math.max(bounds.left - 1, clipBounds.left);
     final maxX = math.min(bounds.right, clipBounds.right - 1);
     if (minX > maxX) return;
@@ -825,7 +855,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
           if (y < minY || y >= maxY) continue;
           final t = (y - p1.y) / (p2.y - p1.y);
           final x = p1.x + (p2.x - p1.x) * t;
-          events.add(_ScanlineIntersection(x, p2.y > p1.y ? 1 : -1));
+          events.add(ScanlineIntersection(x, p2.y > p1.y ? 1 : -1));
         }
       }
       if (events.isEmpty) continue;
@@ -836,7 +866,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
         var spanStart = 0.0;
         for (final event in events) {
           if (inside) {
-            _markFillSpan(mask, py, spanStart, event.x, minX, maxX);
+            markFillSpan(mask, py, spanStart, event.x, minX, maxX);
           }
           inside = !inside;
           spanStart = event.x;
@@ -846,7 +876,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
         var spanStart = 0.0;
         for (final event in events) {
           if (winding != 0) {
-            _markFillSpan(mask, py, spanStart, event.x, minX, maxX);
+            markFillSpan(mask, py, spanStart, event.x, minX, maxX);
           }
           winding += event.windingDelta;
           spanStart = event.x;
@@ -855,8 +885,8 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     }
   }
 
-  void _markFillSpan(
-    _FillCoverageMask mask,
+  void markFillSpan(
+    FillCoverageMask mask,
     int py,
     double x1,
     double x2,
@@ -871,10 +901,10 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     }
   }
 
-  void _markFillBoundaryPixels(
-    _FillCoverageMask mask,
-    _IntRect bounds,
-    List<List<_Point>> contours,
+  void markFillBoundaryPixels(
+    FillCoverageMask mask,
+    IntRect bounds,
+    List<List<Point>> contours,
   ) {
     for (final contour in contours) {
       for (var i = 0; i < contour.length - 1; i++) {
@@ -903,46 +933,46 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     }
   }
 
-  int _fillCoverageSamples(
+  int fillCoverageSamples(
     int px,
     int py,
-    List<List<_Point>> contours,
+    List<List<Point>> contours,
     PdfFillRule rule,
   ) {
     var coveredSamples = 0;
-    for (var sy = 0; sy < _antiAliasSamplesPerAxis; sy++) {
-      final y = py + (sy + 0.5) / _antiAliasSamplesPerAxis;
-      for (var sx = 0; sx < _antiAliasSamplesPerAxis; sx++) {
-        final x = px + (sx + 0.5) / _antiAliasSamplesPerAxis;
-        if (_fillCoversPoint(contours, rule, x, y)) coveredSamples++;
+    for (var sy = 0; sy < antiAliasSamplesPerAxis; sy++) {
+      final y = py + (sy + 0.5) / antiAliasSamplesPerAxis;
+      for (var sx = 0; sx < antiAliasSamplesPerAxis; sx++) {
+        final x = px + (sx + 0.5) / antiAliasSamplesPerAxis;
+        if (fillCoversPoint(contours, rule, x, y)) coveredSamples++;
       }
     }
     return coveredSamples;
   }
 
-  bool _fillCoversPoint(
-    List<List<_Point>> contours,
+  bool fillCoversPoint(
+    List<List<Point>> contours,
     PdfFillRule rule,
     double x,
     double y,
   ) {
     final inside = rule == PdfFillRule.evenOdd
-        ? _containsEvenOdd(contours, x, y)
-        : _containsNonZero(contours, x, y);
-    return inside && _clip.contains(x, y);
+        ? containsEvenOdd(contours, x, y)
+        : containsNonZero(contours, x, y);
+    return inside && clip.contains(x, y);
   }
 
-  void _trace(String operation, _IntRect bounds, [String? details]) {
+  void traceOperation(String operation, IntRect bounds, [String? details]) {
     trace?.add(
       operation,
       bounds.toTraceRegion(),
       details: details == null
-          ? 'groupDepth=${_surfaceStack.length - 1}'
-          : '$details groupDepth=${_surfaceStack.length - 1}',
+          ? 'groupDepth=${surfaceStack.length - 1}'
+          : '$details groupDepth=${surfaceStack.length - 1}',
     );
   }
 
-  void _traceRegion(
+  void traceRegion(
     String operation,
     PdfRenderTraceRegion bounds, [
     String? details,
@@ -951,16 +981,16 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
       operation,
       bounds,
       details: details == null
-          ? 'groupDepth=${_surfaceStack.length - 1}'
-          : '$details groupDepth=${_surfaceStack.length - 1}',
+          ? 'groupDepth=${surfaceStack.length - 1}'
+          : '$details groupDepth=${surfaceStack.length - 1}',
     );
   }
 
-  String _colorDetails(PdfColor color, double alpha) =>
-      'rgb=${_f(color.red)},${_f(color.green)},${_f(color.blue)} '
-      'alpha=${_f(alpha)}';
+  String colorDetails(PdfColor color, double alpha) =>
+      'rgb=${f(color.red)},${f(color.green)},${f(color.blue)} '
+      'alpha=${f(alpha)}';
 
-  String _gradientLineDetails(PdfGradient gradient) {
+  String gradientLineDetails(PdfGradient gradient) {
     final coords = gradient.coords;
     if (coords.length < 4) return '(none)';
     final matrix = gradient.transform;
@@ -968,68 +998,68 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     final y0 = matrix.transformY(coords[0], coords[1]);
     final x1 = matrix.transformX(coords[2], coords[3]);
     final y1 = matrix.transformY(coords[2], coords[3]);
-    return '${_f(x0)},${_f(y0)}->${_f(x1)},${_f(y1)}';
+    return '${f(x0)},${f(y0)}->${f(x1)},${f(y1)}';
   }
 
-  String _f(double value) => value.toStringAsFixed(3);
+  String f(double value) => value.toStringAsFixed(3);
 
-  PdfRenderTraceRegion _rectToTraceRegion(PdfRect rect) {
+  PdfRenderTraceRegion rectToTraceRegion(PdfRect rect) {
     final points = [
-      _Point(
-        _transform.transformX(rect.left, rect.top),
-        _transform.transformY(rect.left, rect.top),
+      Point(
+        transform.transformX(rect.left, rect.top),
+        transform.transformY(rect.left, rect.top),
       ),
-      _Point(
-        _transform.transformX(rect.right, rect.top),
-        _transform.transformY(rect.right, rect.top),
+      Point(
+        transform.transformX(rect.right, rect.top),
+        transform.transformY(rect.right, rect.top),
       ),
-      _Point(
-        _transform.transformX(rect.right, rect.bottom),
-        _transform.transformY(rect.right, rect.bottom),
+      Point(
+        transform.transformX(rect.right, rect.bottom),
+        transform.transformY(rect.right, rect.bottom),
       ),
-      _Point(
-        _transform.transformX(rect.left, rect.bottom),
-        _transform.transformY(rect.left, rect.bottom),
+      Point(
+        transform.transformX(rect.left, rect.bottom),
+        transform.transformY(rect.left, rect.bottom),
       ),
     ];
-    final bounds = _boundsOf([points]);
+    final bounds = boundsOf([points]);
     return bounds?.toTraceRegion() ?? const PdfRenderTraceRegion(0, 0, 0, 0);
   }
 
-  PdfRenderTraceRegion _textRunTraceRegion(PdfTextRun run) {
-    final matrix = run.transform.concat(_transform);
+  PdfRenderTraceRegion textRunTraceRegion(PdfTextRun run) {
+    final matrix = run.transform.concat(transform);
     final corners = [
-      _Point(matrix.transformX(0, -0.25), matrix.transformY(0, -0.25)),
-      _Point(
+      Point(matrix.transformX(0, -0.25), matrix.transformY(0, -0.25)),
+      Point(
         matrix.transformX(run.width, -0.25),
         matrix.transformY(run.width, -0.25),
       ),
-      _Point(matrix.transformX(run.width, 1), matrix.transformY(run.width, 1)),
-      _Point(matrix.transformX(0, 1), matrix.transformY(0, 1)),
+      Point(matrix.transformX(run.width, 1), matrix.transformY(run.width, 1)),
+      Point(matrix.transformX(0, 1), matrix.transformY(0, 1)),
     ];
-    final bounds = _boundsOf([corners]);
+    final bounds = boundsOf([corners]);
     return bounds?.toTraceRegion() ?? const PdfRenderTraceRegion(0, 0, 0, 0);
   }
 
-  String _snippet(String text) {
+  String snippet(String text) {
     final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (normalized.length <= 48) return normalized;
     return '${normalized.substring(0, 45)}...';
   }
 
-  List<List<_Point>> _flatten(
+  List<List<Point>> flatten(
     PdfPath path, {
-    PdfMatrix? transform,
+    PdfMatrix? matrix,
     bool closeOpenContours = false,
   }) {
-    return _flattenPath(
+    return flattenPath(
       path,
-      transform: transform ?? _transform,
+      transform: matrix ?? transform,
       closeOpenContours: closeOpenContours,
     );
   }
 
-  _IntRect? _boundsOf(List<List<_Point>> contours) {
+  IntRect? boundsOf(List<List<Point>> contours) {
     if (contours.isEmpty) return null;
     var left = double.infinity;
     var top = double.infinity;
@@ -1043,16 +1073,16 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
         bottom = math.max(bottom, p.y);
       }
     }
-    return _IntRect(
-      left.floor().clamp(0, _surface.width),
-      top.floor().clamp(0, _surface.height),
-      right.ceil().clamp(0, _surface.width),
-      bottom.ceil().clamp(0, _surface.height),
+    return IntRect(
+      left.floor().clamp(0, surface.width),
+      top.floor().clamp(0, surface.height),
+      right.ceil().clamp(0, surface.width),
+      bottom.ceil().clamp(0, surface.height),
     );
   }
 
-  void _strokeContour(
-    List<_Point> points,
+  void strokeContour(
+    List<Point> points,
     double width,
     List<double> dashes,
     double dashPhase,
@@ -1086,18 +1116,18 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
       final end = points[i + 1];
       var remaining = start.distanceTo(end);
       if (remaining <= 1e-6) continue;
-      final direction = _Point(
+      final direction = Point(
         (end.x - start.x) / remaining,
         (end.y - start.y) / remaining,
       );
       while (remaining > 1e-6) {
         final length = math.min(remaining, dashRemaining);
-        final segmentEnd = _Point(
+        final segmentEnd = Point(
           start.x + direction.x * length,
           start.y + direction.y * length,
         );
         if (dashOn) {
-          _drawStrokeSegment(start, segmentEnd, width, r, g, b, a);
+          drawStrokeSegment(start, segmentEnd, width, r, g, b, a);
         }
         start = segmentEnd;
         remaining -= length;
@@ -1113,9 +1143,9 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     }
   }
 
-  void _drawStrokeSegment(
-    _Point p1,
-    _Point p2,
+  void drawStrokeSegment(
+    Point p1,
+    Point p2,
     double width,
     int r,
     int g,
@@ -1124,15 +1154,12 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
   ) {
     final radius = width / 2;
     final antialiasRadius = radius + 0.5;
-    final bounds = _IntRect(
-      (math.min(p1.x, p2.x) - antialiasRadius).floor().clamp(0, _surface.width),
-      (math.min(p1.y, p2.y) - antialiasRadius).floor().clamp(
-        0,
-        _surface.height,
-      ),
-      (math.max(p1.x, p2.x) + antialiasRadius).ceil().clamp(0, _surface.width),
-      (math.max(p1.y, p2.y) + antialiasRadius).ceil().clamp(0, _surface.height),
-    ).intersect(_clip.bounds);
+    final bounds = IntRect(
+      (math.min(p1.x, p2.x) - antialiasRadius).floor().clamp(0, surface.width),
+      (math.min(p1.y, p2.y) - antialiasRadius).floor().clamp(0, surface.height),
+      (math.max(p1.x, p2.x) + antialiasRadius).ceil().clamp(0, surface.width),
+      (math.max(p1.y, p2.y) + antialiasRadius).ceil().clamp(0, surface.height),
+    ).intersect(clip.bounds);
     if (bounds.isEmpty) return;
     final dx = p2.x - p1.x;
     final dy = p2.y - p1.y;
@@ -1140,7 +1167,7 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
     if (lengthSquared <= 1e-12) return;
     for (var py = bounds.top; py < bounds.bottom; py++) {
       for (var px = bounds.left; px < bounds.right; px++) {
-        final coverage = _strokeCoverageAtPixel(
+        final coverage = strokeCoverageAtPixel(
           px,
           py,
           p1,
@@ -1150,27 +1177,27 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
           radius,
         );
         if (coverage <= 0) continue;
-        _surface.blendPixel(px, py, r, g, b, (a * coverage).round());
+        surface.blendPixel(px, py, r, g, b, (a * coverage).round());
       }
     }
   }
 
-  double _strokeCoverageAtPixel(
+  double strokeCoverageAtPixel(
     int px,
     int py,
-    _Point p1,
+    Point p1,
     double dx,
     double dy,
     double lengthSquared,
     double radius,
   ) {
     var coverage = 0.0;
-    for (var sy = 0; sy < _antiAliasSamplesPerAxis; sy++) {
-      final y = py + (sy + 0.5) / _antiAliasSamplesPerAxis;
-      for (var sx = 0; sx < _antiAliasSamplesPerAxis; sx++) {
-        final x = px + (sx + 0.5) / _antiAliasSamplesPerAxis;
-        if (!_clip.contains(x, y)) continue;
-        coverage += _strokeCoverageAtPoint(
+    for (var sy = 0; sy < antiAliasSamplesPerAxis; sy++) {
+      final y = py + (sy + 0.5) / antiAliasSamplesPerAxis;
+      for (var sx = 0; sx < antiAliasSamplesPerAxis; sx++) {
+        final x = px + (sx + 0.5) / antiAliasSamplesPerAxis;
+        if (!clip.contains(x, y)) continue;
+        coverage += strokeCoverageAtPoint(
           x,
           y,
           p1,
@@ -1181,13 +1208,13 @@ class PdfDirectPdfDevice implements PdfDevice, PdfDisplayCommandDevice {
         );
       }
     }
-    return coverage * _antiAliasSampleScale;
+    return coverage * antiAliasSampleScale;
   }
 
-  _DecodedImage? _decodeImage(_ImageDrawRequest request) {
+  DecodedImage? decodeImage(ImageDrawRequest request) {
     final cache = imageDecodeCache;
     return cache == null
-        ? _decodePdfImage(request, cosDocument)
-        : cache._decode(request, cosDocument);
+        ? decodePdfImage(request, cosDocument)
+        : cache.decode(request, cosDocument);
   }
 }

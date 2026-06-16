@@ -1,43 +1,76 @@
-part of 'pdf_renderer.dart';
+// ignore_for_file: unused_import, implementation_imports
 
-class _RecordingPdfDevice implements PdfDevice {
-  _RecordingPdfDevice({
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:image/image.dart' as image;
+import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
+import 'package:pdf_cos/pdf_cos.dart' as cos;
+import 'package:pdf_document/pdf_document.dart';
+import 'package:pdf_graphics/pdf_graphics.dart'
+    hide
+        PdfBeginGroupCommand,
+        PdfClipPathCommand,
+        PdfDrawImageCommand,
+        PdfDrawTextCommand,
+        PdfEndGroupCommand,
+        PdfFillMeshCommand,
+        PdfFillPathCommand,
+        PdfFillPathGradientCommand,
+        PdfRestoreCommand,
+        PdfSaveCommand,
+        PdfSetBlendModeCommand,
+        PdfStrokePathCommand,
+        RecordingPdfDevice;
+import 'pdf_display_command.dart';
+import 'pdfium_cmyk.dart';
+import 'pdf_renderer.dart';
+import 'pdf_renderer_direct_device.dart';
+import 'pdf_renderer_display_list.dart';
+import 'pdf_renderer_geometry.dart';
+import 'pdf_renderer_glyph.dart';
+import 'pdf_renderer_graphics.dart';
+import 'pdf_renderer_image.dart';
+import 'pdf_renderer_models.dart';
+
+class RecordingPdfDevice implements PdfDevice {
+  RecordingPdfDevice({
     required this.transform,
     required this.imageColorContexts,
     required this.documentImageColorContext,
   });
 
   final PdfMatrix transform;
-  final Map<cos.CosStream, _ImageColorContext> imageColorContexts;
-  final _ImageColorContext documentImageColorContext;
-  final _commandStack = <List<PdfDisplayCommand>>[<PdfDisplayCommand>[]];
+  final Map<cos.CosStream, ImageColorContext> imageColorContexts;
+  final ImageColorContext documentImageColorContext;
+  final commandStack = <List<PdfDisplayCommand>>[<PdfDisplayCommand>[]];
 
-  List<PdfDisplayCommand> get commands => _commandStack.first;
+  List<PdfDisplayCommand> get commands => commandStack.first;
 
-  void _addCommand(PdfDisplayCommand command) {
-    _commandStack.last.add(command);
+  void addCommand(PdfDisplayCommand command) {
+    commandStack.last.add(command);
   }
 
   @override
   void save() {
-    _addCommand(const PdfSaveCommand());
+    addCommand(const PdfSaveCommand());
   }
 
   @override
   void restore() {
-    _addCommand(const PdfRestoreCommand());
+    addCommand(const PdfRestoreCommand());
   }
 
   @override
   void fillPath(PdfPath path, PdfColor color, PdfFillRule rule, double alpha) {
-    final transformed = _transformPath(path, transform);
-    _addCommand(
+    final transformed = transformPath(path, transform);
+    addCommand(
       PdfFillPathCommand(
         transformed,
         color,
         rule,
         alpha,
-        _pathBounds(transformed),
+        pathBounds(transformed),
       ),
     );
   }
@@ -49,24 +82,22 @@ class _RecordingPdfDevice implements PdfDevice {
     PdfGradient gradient,
     double alpha,
   ) {
-    final transformed = _transformPath(path, transform);
-    _addCommand(
+    final transformed = transformPath(path, transform);
+    addCommand(
       PdfFillPathGradientCommand(
         transformed,
         rule,
-        _transformGradient(gradient, transform),
+        transformGradient(gradient, transform),
         alpha,
-        _pathBounds(transformed),
+        pathBounds(transformed),
       ),
     );
   }
 
   @override
   void fillMesh(PdfMesh mesh, double alpha) {
-    final transformed = _transformMesh(mesh, transform);
-    _addCommand(
-      PdfFillMeshCommand(transformed, alpha, _meshBounds(transformed)),
-    );
+    final transformed = transformMesh(mesh, transform);
+    addCommand(PdfFillMeshCommand(transformed, alpha, meshBounds(transformed)));
   }
 
   @override
@@ -76,9 +107,9 @@ class _RecordingPdfDevice implements PdfDevice {
     PdfStroke stroke,
     double alpha,
   ) {
-    final transformed = _transformPath(path, transform);
-    final bounds = _pathBounds(transformed)?.inflate(stroke.width / 2 + 1);
-    _addCommand(
+    final transformed = transformPath(path, transform);
+    final bounds = pathBounds(transformed)?.inflate(stroke.width / 2 + 1);
+    addCommand(
       PdfStrokePathCommand(
         transformed,
         color,
@@ -91,56 +122,53 @@ class _RecordingPdfDevice implements PdfDevice {
 
   @override
   void clipPath(PdfPath path, PdfFillRule rule) {
-    _addCommand(PdfClipPathCommand(_transformPath(path, transform), rule));
+    addCommand(PdfClipPathCommand(transformPath(path, transform), rule));
   }
 
   @override
   void drawText(PdfTextRun run) {
-    final transformed = _transformTextRun(run, transform);
+    final transformed = transformTextRun(run, transform);
     if (run.invisible) {
-      _addCommand(PdfDrawTextCommand(transformed, null));
+      addCommand(PdfDrawTextCommand(transformed, null));
       return;
     }
-    _addCommand(
-      PdfDrawTextCommand(transformed, _textRunBounds(transformed)?.inflate(2)),
+    addCommand(
+      PdfDrawTextCommand(transformed, textRunBounds(transformed)?.inflate(2)),
     );
   }
 
   @override
   void drawImage(PdfImageRequest request) {
-    final transformed = _transformImageDrawRequest(
-      _ImageDrawRequest(
+    final transformed = transformImageDrawRequest(
+      ImageDrawRequest(
         request,
         imageColorContexts[request.stream] ?? documentImageColorContext,
       ),
       transform,
     );
-    _addCommand(
-      PdfDrawImageCommand(
-        transformed,
-        _imageRequestBounds(transformed.request),
-      ),
+    addCommand(
+      PdfDrawImageCommand(transformed, imageRequestBounds(transformed.request)),
     );
   }
 
   @override
   void setBlendMode(PdfBlendMode mode) {
-    _addCommand(PdfSetBlendModeCommand(mode));
+    addCommand(PdfSetBlendModeCommand(mode));
   }
 
   @override
   void beginGroup(double alpha, {bool knockout = false}) {
-    _addCommand(PdfBeginGroupCommand(alpha, knockout: knockout));
+    addCommand(PdfBeginGroupCommand(alpha, knockout: knockout));
   }
 
   @override
   void endGroup() {
-    _addCommand(const PdfEndGroupCommand());
+    addCommand(const PdfEndGroupCommand());
   }
 
   @override
   void beginSoftMasked() {
-    _addCommand(const PdfBeginSoftMaskCommand());
+    addCommand(const PdfBeginSoftMaskCommand());
   }
 
   @override
@@ -152,15 +180,15 @@ class _RecordingPdfDevice implements PdfDevice {
     double transferScale = 1,
     double transferOffset = 0,
   }) {
-    _commandStack.add(<PdfDisplayCommand>[]);
+    commandStack.add(<PdfDisplayCommand>[]);
     drawMask();
     final maskCommands = List<PdfDisplayCommand>.unmodifiable(
-      _commandStack.removeLast(),
+      commandStack.removeLast(),
     );
-    _addCommand(
+    addCommand(
       PdfEndSoftMaskCommand(
         luminosity: luminosity,
-        backdrop: _transformRect(backdrop, transform),
+        backdrop: transformRect(backdrop, transform),
         maskCommands: maskCommands,
         backdropLuminance: backdropLuminance,
         transferScale: transferScale,

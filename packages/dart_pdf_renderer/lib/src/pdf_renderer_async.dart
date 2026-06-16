@@ -7,6 +7,9 @@ import 'dart:typed_data';
 import 'package:pdf_document/pdf_document.dart';
 
 import 'pdf_renderer.dart';
+import 'pdf_renderer_glyph.dart';
+import 'pdf_renderer_image.dart';
+import 'pdf_renderer_models.dart';
 
 /// An asynchronous renderer for one PDF document hosted by a
 /// [PdfPageAsyncRendererWorker].

@@ -1,10 +1,43 @@
-part of 'pdf_renderer.dart';
+// ignore_for_file: unused_import, implementation_imports
+
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:image/image.dart' as image;
+import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
+import 'package:pdf_cos/pdf_cos.dart' as cos;
+import 'package:pdf_document/pdf_document.dart';
+import 'package:pdf_graphics/pdf_graphics.dart'
+    hide
+        PdfBeginGroupCommand,
+        PdfClipPathCommand,
+        PdfDrawImageCommand,
+        PdfDrawTextCommand,
+        PdfEndGroupCommand,
+        PdfFillMeshCommand,
+        PdfFillPathCommand,
+        PdfFillPathGradientCommand,
+        PdfRestoreCommand,
+        PdfSaveCommand,
+        PdfSetBlendModeCommand,
+        PdfStrokePathCommand,
+        RecordingPdfDevice;
+import 'pdf_display_command.dart';
+import 'pdfium_cmyk.dart';
+import 'pdf_renderer.dart';
+import 'pdf_renderer_direct_device.dart';
+import 'pdf_renderer_display_list.dart';
+import 'pdf_renderer_geometry.dart';
+import 'pdf_renderer_graphics.dart';
+import 'pdf_renderer_image.dart';
+import 'pdf_renderer_models.dart';
+import 'pdf_renderer_recording_device.dart';
 
 class PdfGlyphRasterCache {
   /// Creates a glyph raster cache.
   PdfGlyphRasterCache({
-    this.maxEntries = _defaultMaxGlyphRasterCacheEntries,
-    this.maxGlyphPixels = _defaultMaxGlyphRasterPixels,
+    this.maxEntries = defaultMaxGlyphRasterCacheEntries,
+    this.maxGlyphPixels = defaultMaxGlyphRasterPixels,
   });
 
   /// The maximum number of glyph masks retained.
@@ -12,20 +45,20 @@ class PdfGlyphRasterCache {
 
   /// The maximum pixel area allowed for a single glyph mask.
   final int maxGlyphPixels;
-  final _entries = <_GlyphRasterKey, _GlyphRasterMask>{};
-  final _outlineKeys = Expando<_GlyphOutlineKey>();
+  final entries = <GlyphRasterKey, GlyphRasterMask>{};
+  final outlineKeys = Expando<GlyphOutlineKey>();
 
   /// The current number of cached glyph masks.
-  int get entryCount => _entries.length;
+  int get entryCount => entries.length;
 
   /// Removes all cached glyph masks.
   void clear() {
-    _entries.clear();
+    entries.clear();
   }
 
-  bool _paintGlyph({
-    required _RgbaSurface surface,
-    required _ClipState clip,
+  bool paintGlyph({
+    required RgbaSurface surface,
+    required ClipState clip,
     required PdfPath outline,
     required PdfMatrix transform,
     required PdfColor color,
@@ -33,19 +66,19 @@ class PdfGlyphRasterCache {
     PdfRenderTiming? timing,
   }) {
     timing?.glyphRequests++;
-    final placement = _GlyphRasterPlacement.from(transform);
-    final key = _GlyphRasterKey.from(
-      _outlineKeys[outline] ??= _GlyphOutlineKey.from(outline),
+    final placement = GlyphRasterPlacement.from(transform);
+    final key = GlyphRasterKey.from(
+      outlineKeys[outline] ??= GlyphOutlineKey.from(outline),
       placement,
     );
-    final cached = _entries.remove(key);
-    final _GlyphRasterMask? mask;
+    final cached = entries.remove(key);
+    final GlyphRasterMask? mask;
     if (cached != null) {
       timing?.glyphCacheHits++;
       mask = cached;
     } else {
       final stopwatch = timing == null ? null : (Stopwatch()..start());
-      mask = _createMask(outline, placement);
+      mask = createMask(outline, placement);
       if (stopwatch != null) {
         stopwatch.stop();
         timing!.glyphMaskCreateMicroseconds += stopwatch.elapsedMicroseconds;
@@ -56,9 +89,9 @@ class PdfGlyphRasterCache {
       }
       timing?.glyphMasksCreated++;
     }
-    _entries[key] = mask;
-    if (_entries.length > maxEntries) {
-      _entries.remove(_entries.keys.first);
+    entries[key] = mask;
+    if (entries.length > maxEntries) {
+      entries.remove(entries.keys.first);
     }
     final paintStopwatch = timing == null ? null : (Stopwatch()..start());
     mask.paint(
@@ -76,27 +109,24 @@ class PdfGlyphRasterCache {
     return true;
   }
 
-  _GlyphRasterMask? _createMask(
-    PdfPath outline,
-    _GlyphRasterPlacement placement,
-  ) {
-    final contours = _flattenPath(
+  GlyphRasterMask? createMask(PdfPath outline, GlyphRasterPlacement placement) {
+    final contours = flattenPath(
       outline,
       transform: placement.transform,
       closeOpenContours: true,
     );
-    final bounds = _rawBoundsOf(contours);
+    final bounds = rawBoundsOf(contours);
     if (bounds == null || bounds.isEmpty) {
-      return const _GlyphRasterMask.empty();
+      return const GlyphRasterMask.empty();
     }
     if (bounds.width * bounds.height > maxGlyphPixels) return null;
 
-    final coverage = _buildPathCoverageAlpha(
+    final coverage = buildPathCoverageAlpha(
       bounds,
       contours,
       PdfFillRule.nonzero,
     );
-    return _GlyphRasterMask(
+    return GlyphRasterMask(
       bounds.left,
       bounds.top,
       bounds.width,
@@ -106,8 +136,8 @@ class PdfGlyphRasterCache {
   }
 }
 
-class _GlyphRasterPlacement {
-  const _GlyphRasterPlacement(
+class GlyphRasterPlacement {
+  const GlyphRasterPlacement(
     this.baseX,
     this.baseY,
     this.qa,
@@ -118,16 +148,16 @@ class _GlyphRasterPlacement {
     this.qfy,
   );
 
-  factory _GlyphRasterPlacement.from(PdfMatrix transform) {
-    final fx = _quantizeFraction(transform.e);
-    final fy = _quantizeFraction(transform.f);
-    return _GlyphRasterPlacement(
+  factory GlyphRasterPlacement.from(PdfMatrix transform) {
+    final fx = quantizeFraction(transform.e);
+    final fy = quantizeFraction(transform.f);
+    return GlyphRasterPlacement(
       fx.base,
       fy.base,
-      _quantizeTransform(transform.a),
-      _quantizeTransform(transform.b),
-      _quantizeTransform(transform.c),
-      _quantizeTransform(transform.d),
+      quantizeTransform(transform.a),
+      quantizeTransform(transform.b),
+      quantizeTransform(transform.c),
+      quantizeTransform(transform.d),
       fx.fraction,
       fy.fraction,
     );
@@ -143,17 +173,17 @@ class _GlyphRasterPlacement {
   final int qfy;
 
   PdfMatrix get transform => PdfMatrix(
-    qa / _glyphTransformQuantization,
-    qb / _glyphTransformQuantization,
-    qc / _glyphTransformQuantization,
-    qd / _glyphTransformQuantization,
-    qfx / _glyphSubpixelQuantization,
-    qfy / _glyphSubpixelQuantization,
+    qa / glyphTransformQuantization,
+    qb / glyphTransformQuantization,
+    qc / glyphTransformQuantization,
+    qd / glyphTransformQuantization,
+    qfx / glyphSubpixelQuantization,
+    qfy / glyphSubpixelQuantization,
   );
 }
 
-class _GlyphRasterKey {
-  const _GlyphRasterKey(
+class GlyphRasterKey {
+  const GlyphRasterKey(
     this.outlineKey,
     this.qa,
     this.qb,
@@ -163,10 +193,10 @@ class _GlyphRasterKey {
     this.qfy,
   );
 
-  factory _GlyphRasterKey.from(
-    _GlyphOutlineKey outlineKey,
-    _GlyphRasterPlacement placement,
-  ) => _GlyphRasterKey(
+  factory GlyphRasterKey.from(
+    GlyphOutlineKey outlineKey,
+    GlyphRasterPlacement placement,
+  ) => GlyphRasterKey(
     outlineKey,
     placement.qa,
     placement.qb,
@@ -176,7 +206,7 @@ class _GlyphRasterKey {
     placement.qfy,
   );
 
-  final _GlyphOutlineKey outlineKey;
+  final GlyphOutlineKey outlineKey;
   final int qa;
   final int qb;
   final int qc;
@@ -186,7 +216,7 @@ class _GlyphRasterKey {
 
   @override
   bool operator ==(Object other) =>
-      other is _GlyphRasterKey &&
+      other is GlyphRasterKey &&
       outlineKey == other.outlineKey &&
       qa == other.qa &&
       qb == other.qb &&
@@ -199,34 +229,34 @@ class _GlyphRasterKey {
   int get hashCode => Object.hash(outlineKey, qa, qb, qc, qd, qfx, qfy);
 }
 
-class _GlyphOutlineKey {
-  const _GlyphOutlineKey(this.segments, this.hashCode);
+class GlyphOutlineKey {
+  const GlyphOutlineKey(this.segments, this.hashCode);
 
-  factory _GlyphOutlineKey.from(PdfPath outline) {
+  factory GlyphOutlineKey.from(PdfPath outline) {
     var hash = 0x345678;
     for (final segment in outline.segments) {
       switch (segment) {
         case PdfMoveTo(:final x, :final y):
-          hash = _combineHash(hash, 1);
-          hash = _combineHash(hash, x.hashCode);
-          hash = _combineHash(hash, y.hashCode);
+          hash = combineHash(hash, 1);
+          hash = combineHash(hash, x.hashCode);
+          hash = combineHash(hash, y.hashCode);
         case PdfLineTo(:final x, :final y):
-          hash = _combineHash(hash, 2);
-          hash = _combineHash(hash, x.hashCode);
-          hash = _combineHash(hash, y.hashCode);
+          hash = combineHash(hash, 2);
+          hash = combineHash(hash, x.hashCode);
+          hash = combineHash(hash, y.hashCode);
         case PdfCubicTo():
-          hash = _combineHash(hash, 3);
-          hash = _combineHash(hash, segment.x1.hashCode);
-          hash = _combineHash(hash, segment.y1.hashCode);
-          hash = _combineHash(hash, segment.x2.hashCode);
-          hash = _combineHash(hash, segment.y2.hashCode);
-          hash = _combineHash(hash, segment.x3.hashCode);
-          hash = _combineHash(hash, segment.y3.hashCode);
+          hash = combineHash(hash, 3);
+          hash = combineHash(hash, segment.x1.hashCode);
+          hash = combineHash(hash, segment.y1.hashCode);
+          hash = combineHash(hash, segment.x2.hashCode);
+          hash = combineHash(hash, segment.y2.hashCode);
+          hash = combineHash(hash, segment.x3.hashCode);
+          hash = combineHash(hash, segment.y3.hashCode);
         case PdfClosePath():
-          hash = _combineHash(hash, 4);
+          hash = combineHash(hash, 4);
       }
     }
-    return _GlyphOutlineKey(outline.segments, hash);
+    return GlyphOutlineKey(outline.segments, hash);
   }
 
   final List<PdfPathSegment> segments;
@@ -237,21 +267,21 @@ class _GlyphOutlineKey {
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
-    if (other is! _GlyphOutlineKey) return false;
+    if (other is! GlyphOutlineKey) return false;
     if (hashCode != other.hashCode) return false;
     if (identical(segments, other.segments)) return true;
     if (segments.length != other.segments.length) return false;
     for (var i = 0; i < segments.length; i++) {
-      if (!_samePathSegment(segments[i], other.segments[i])) return false;
+      if (!samePathSegment(segments[i], other.segments[i])) return false;
     }
     return true;
   }
 }
 
-int _combineHash(int hash, int value) =>
+int combineHash(int hash, int value) =>
     0x1fffffff & (hash + value + ((hash & 0x0007ffff) << 10));
 
-bool _samePathSegment(PdfPathSegment a, PdfPathSegment b) {
+bool samePathSegment(PdfPathSegment a, PdfPathSegment b) {
   switch (a) {
     case PdfMoveTo(:final x, :final y):
       return b is PdfMoveTo && x == b.x && y == b.y;
@@ -270,8 +300,8 @@ bool _samePathSegment(PdfPathSegment a, PdfPathSegment b) {
   }
 }
 
-class _GlyphRasterMask {
-  const _GlyphRasterMask(
+class GlyphRasterMask {
+  const GlyphRasterMask(
     this.originX,
     this.originY,
     this.width,
@@ -279,7 +309,7 @@ class _GlyphRasterMask {
     this.coverage,
   );
 
-  const _GlyphRasterMask.empty()
+  const GlyphRasterMask.empty()
     : originX = 0,
       originY = 0,
       width = 0,
@@ -293,8 +323,8 @@ class _GlyphRasterMask {
   final List<int> coverage;
 
   void paint({
-    required _RgbaSurface surface,
-    required _ClipState clip,
+    required RgbaSurface surface,
+    required ClipState clip,
     required int baseX,
     required int baseY,
     required PdfColor color,
@@ -351,16 +381,16 @@ class _GlyphRasterMask {
   }
 }
 
-Uint8List _buildPathCoverageAlpha(
-  _IntRect bounds,
-  List<List<_Point>> contours,
+Uint8List buildPathCoverageAlpha(
+  IntRect bounds,
+  List<List<Point>> contours,
   PdfFillRule rule,
 ) {
   final coverage = Uint8List(bounds.width * bounds.height);
-  final events = <_ScanlineIntersection>[];
+  final events = <ScanlineIntersection>[];
   for (var py = bounds.top; py < bounds.bottom; py++) {
-    for (var sy = 0; sy < _antiAliasSamplesPerAxis; sy++) {
-      final y = py + (sy + 0.5) / _antiAliasSamplesPerAxis;
+    for (var sy = 0; sy < antiAliasSamplesPerAxis; sy++) {
+      final y = py + (sy + 0.5) / antiAliasSamplesPerAxis;
       events.clear();
       for (final contour in contours) {
         for (var i = 0; i < contour.length - 1; i++) {
@@ -372,7 +402,7 @@ Uint8List _buildPathCoverageAlpha(
           if (y < minY || y >= maxY) continue;
           final t = (y - p1.y) / (p2.y - p1.y);
           final x = p1.x + (p2.x - p1.x) * t;
-          events.add(_ScanlineIntersection(x, p2.y > p1.y ? 1 : -1));
+          events.add(ScanlineIntersection(x, p2.y > p1.y ? 1 : -1));
         }
       }
       if (events.isEmpty) continue;
@@ -383,7 +413,7 @@ Uint8List _buildPathCoverageAlpha(
         var spanStart = 0.0;
         for (final event in events) {
           if (inside) {
-            _addCoverageSpanSamples(coverage, bounds, py, spanStart, event.x);
+            addCoverageSpanSamples(coverage, bounds, py, spanStart, event.x);
           }
           inside = !inside;
           spanStart = event.x;
@@ -393,7 +423,7 @@ Uint8List _buildPathCoverageAlpha(
         var spanStart = 0.0;
         for (final event in events) {
           if (winding != 0) {
-            _addCoverageSpanSamples(coverage, bounds, py, spanStart, event.x);
+            addCoverageSpanSamples(coverage, bounds, py, spanStart, event.x);
           }
           winding += event.windingDelta;
           spanStart = event.x;
@@ -402,28 +432,28 @@ Uint8List _buildPathCoverageAlpha(
     }
   }
   for (var i = 0; i < coverage.length; i++) {
-    coverage[i] = _coverageAlphaForSampleCount(coverage[i]);
+    coverage[i] = coverageAlphaForSampleCount(coverage[i]);
   }
   return coverage;
 }
 
-int _coverageAlphaForSampleCount(int coveredSamples) {
+int coverageAlphaForSampleCount(int coveredSamples) {
   if (coveredSamples <= 0) return 0;
-  if (coveredSamples >= _antiAliasSampleCount) return 255;
-  return (coveredSamples * 255 / _antiAliasSampleCount).round();
+  if (coveredSamples >= antiAliasSampleCount) return 255;
+  return (coveredSamples * 255 / antiAliasSampleCount).round();
 }
 
-void _addCoverageSpanSamples(
+void addCoverageSpanSamples(
   Uint8List coverage,
-  _IntRect bounds,
+  IntRect bounds,
   int py,
   double x1,
   double x2,
 ) {
   if (x2 <= x1) return;
   final rowOffset = (py - bounds.top) * bounds.width - bounds.left;
-  for (var sx = 0; sx < _antiAliasSamplesPerAxis; sx++) {
-    final offset = (sx + 0.5) / _antiAliasSamplesPerAxis;
+  for (var sx = 0; sx < antiAliasSamplesPerAxis; sx++) {
+    final offset = (sx + 0.5) / antiAliasSamplesPerAxis;
     final start = math.max(bounds.left, (x1 - offset).ceil());
     final end = math.min(bounds.right, (x2 - offset).ceil());
     for (var px = start; px < end; px++) {
@@ -432,20 +462,20 @@ void _addCoverageSpanSamples(
   }
 }
 
-({int base, int fraction}) _quantizeFraction(double value) {
+({int base, int fraction}) quantizeFraction(double value) {
   var base = value.floor();
-  var fraction = ((value - base) * _glyphSubpixelQuantization).round();
-  if (fraction >= _glyphSubpixelQuantization) {
+  var fraction = ((value - base) * glyphSubpixelQuantization).round();
+  if (fraction >= glyphSubpixelQuantization) {
     base++;
     fraction = 0;
   }
   return (base: base, fraction: fraction);
 }
 
-int _quantizeTransform(double value) =>
-    (value * _glyphTransformQuantization).round();
+int quantizeTransform(double value) =>
+    (value * glyphTransformQuantization).round();
 
-PdfPath _transformPath(PdfPath path, PdfMatrix transform) => PdfPath([
+PdfPath transformPath(PdfPath path, PdfMatrix transform) => PdfPath([
   for (final segment in path.segments)
     switch (segment) {
       PdfMoveTo(:final x, :final y) => PdfMoveTo(
@@ -468,7 +498,7 @@ PdfPath _transformPath(PdfPath path, PdfMatrix transform) => PdfPath([
     },
 ]);
 
-PdfTextRun _transformTextRun(PdfTextRun run, PdfMatrix transform) => PdfTextRun(
+PdfTextRun transformTextRun(PdfTextRun run, PdfMatrix transform) => PdfTextRun(
   text: run.text,
   transform: run.transform.concat(transform),
   color: run.color,

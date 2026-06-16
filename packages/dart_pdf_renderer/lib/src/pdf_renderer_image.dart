@@ -1,52 +1,85 @@
-part of 'pdf_renderer.dart';
+// ignore_for_file: unused_import, implementation_imports
 
-const _defaultMaxDecodedImageCacheBytes = 64 * 1024 * 1024;
-const _defaultMaxDecodedImageCacheEntries = 64;
+import 'dart:math' as math;
+import 'dart:typed_data';
 
-class _ImageColorContext {
-  _ImageColorContext._({
+import 'package:image/image.dart' as image;
+import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
+import 'package:pdf_cos/pdf_cos.dart' as cos;
+import 'package:pdf_document/pdf_document.dart';
+import 'package:pdf_graphics/pdf_graphics.dart'
+    hide
+        PdfBeginGroupCommand,
+        PdfClipPathCommand,
+        PdfDrawImageCommand,
+        PdfDrawTextCommand,
+        PdfEndGroupCommand,
+        PdfFillMeshCommand,
+        PdfFillPathCommand,
+        PdfFillPathGradientCommand,
+        PdfRestoreCommand,
+        PdfSaveCommand,
+        PdfSetBlendModeCommand,
+        PdfStrokePathCommand,
+        RecordingPdfDevice;
+import 'pdf_display_command.dart';
+import 'pdfium_cmyk.dart';
+import 'pdf_renderer.dart';
+import 'pdf_renderer_direct_device.dart';
+import 'pdf_renderer_display_list.dart';
+import 'pdf_renderer_geometry.dart';
+import 'pdf_renderer_glyph.dart';
+import 'pdf_renderer_graphics.dart';
+import 'pdf_renderer_models.dart';
+import 'pdf_renderer_recording_device.dart';
+
+const defaultMaxDecodedImageCacheBytes = 64 * 1024 * 1024;
+const defaultMaxDecodedImageCacheEntries = 64;
+
+class ImageColorContext {
+  ImageColorContext.internal({
     required this.defaultGray,
     required this.defaultRgb,
     required this.defaultCmyk,
     required this.namedColorSpaces,
-  }) : cacheKey = _nextCacheKey++;
+  }) : cacheKey = nextCacheKey++;
 
-  factory _ImageColorContext.fromDocument(cos.CosDocument cosDocument) {
-    return _ImageColorContext._(
+  factory ImageColorContext.fromDocument(cos.CosDocument cosDocument) {
+    return ImageColorContext.internal(
       defaultGray: null,
       defaultRgb: null,
-      defaultCmyk: _outputIntentCmyk(cosDocument),
+      defaultCmyk: outputIntentCmyk(cosDocument),
       namedColorSpaces: const {},
     );
   }
 
-  factory _ImageColorContext.fromResources(
+  factory ImageColorContext.fromResources(
     cos.CosDocument cosDocument,
     cos.CosDictionary resources, {
-    required _ImageColorContext parent,
+    required ImageColorContext parent,
   }) {
     final spaces = cosDocument.resolve(resources['ColorSpace']);
     if (spaces is! cos.CosDictionary) return parent;
 
     final namedColorSpaces = <String, cos.CosObject>{};
     for (final entry in spaces.entries.entries) {
-      if (!_defaultColorSpaceNames.contains(entry.key)) {
+      if (!defaultColorSpaceNames.contains(entry.key)) {
         namedColorSpaces[entry.key] = entry.value;
       }
     }
     final namedContext = namedColorSpaces.isEmpty
         ? parent
-        : _ImageColorContext._(
+        : ImageColorContext.internal(
             defaultGray: parent.defaultGray,
             defaultRgb: parent.defaultRgb,
             defaultCmyk: parent.defaultCmyk,
             namedColorSpaces: namedColorSpaces,
           );
 
-    _ImageColorSpace? defaultSpace(String name) {
+    ImageColorSpace? defaultSpace(String name) {
       final object = spaces[name];
       if (object == null) return null;
-      return _ImageColorSpace.parse(
+      return ImageColorSpace.parse(
         cosDocument,
         object,
         context: namedContext,
@@ -61,7 +94,7 @@ class _ImageColorContext {
       return parent;
     }
 
-    return _ImageColorContext._(
+    return ImageColorContext.internal(
       defaultGray: defaultSpace('DefaultGray') ?? parent.defaultGray,
       defaultRgb: defaultSpace('DefaultRGB') ?? parent.defaultRgb,
       defaultCmyk: defaultSpace('DefaultCMYK') ?? parent.defaultCmyk,
@@ -69,22 +102,22 @@ class _ImageColorContext {
     );
   }
 
-  static final device = _ImageColorContext._(
+  static final device = ImageColorContext.internal(
     defaultGray: null,
     defaultRgb: null,
     defaultCmyk: null,
     namedColorSpaces: const {},
   );
 
-  static var _nextCacheKey = 1;
+  static var nextCacheKey = 1;
 
-  final _ImageColorSpace? defaultGray;
-  final _ImageColorSpace? defaultRgb;
-  final _ImageColorSpace? defaultCmyk;
+  final ImageColorSpace? defaultGray;
+  final ImageColorSpace? defaultRgb;
+  final ImageColorSpace? defaultCmyk;
   final Map<String, cos.CosObject> namedColorSpaces;
   final int cacheKey;
 
-  _ImageColorSpace? resolveNamed(
+  ImageColorSpace? resolveNamed(
     cos.CosDocument cosDocument,
     String name, {
     bool useDeviceDefaults = true,
@@ -95,7 +128,7 @@ class _ImageColorContext {
     final resolving = resolvingNames ?? <String>{};
     if (!resolving.add(name)) return null;
     try {
-      return _ImageColorSpace.parse(
+      return ImageColorSpace.parse(
         cosDocument,
         object,
         context: this,
@@ -108,9 +141,9 @@ class _ImageColorContext {
   }
 }
 
-const _defaultColorSpaceNames = {'DefaultGray', 'DefaultRGB', 'DefaultCMYK'};
+const defaultColorSpaceNames = {'DefaultGray', 'DefaultRGB', 'DefaultCMYK'};
 
-_ImageColorSpace? _outputIntentCmyk(cos.CosDocument cosDocument) {
+ImageColorSpace? outputIntentCmyk(cos.CosDocument cosDocument) {
   final root = cosDocument.resolve(cosDocument.trailer['Root']);
   if (root is! cos.CosDictionary) return null;
   final intents = cosDocument.resolve(root['OutputIntents']);
@@ -124,11 +157,11 @@ _ImageColorSpace? _outputIntentCmyk(cos.CosDocument cosDocument) {
     if (intent is! cos.CosDictionary) continue;
     final profile = cosDocument.resolve(intent['DestOutputProfile']);
     if (profile is! cos.CosStream) continue;
-    final n = _intValue(cosDocument.resolve(profile.dictionary['N']));
+    final n = intValue(cosDocument.resolve(profile.dictionary['N']));
     if (n != 4) continue;
-    final iccProfile = _parseIccProfile(cosDocument, profile);
+    final iccProfile = parseIccProfile(cosDocument, profile);
     if (iccProfile != null && iccProfile.channels == 4) {
-      return _ImageColorSpace.cmyk(iccProfile: iccProfile);
+      return ImageColorSpace.cmyk(iccProfile: iccProfile);
     }
   }
   return null;
@@ -138,8 +171,8 @@ _ImageColorSpace? _outputIntentCmyk(cos.CosDocument cosDocument) {
 class PdfImageDecodeCache {
   /// Creates an image decode cache.
   PdfImageDecodeCache({
-    this.maxEntries = _defaultMaxDecodedImageCacheEntries,
-    this.maxBytes = _defaultMaxDecodedImageCacheBytes,
+    this.maxEntries = defaultMaxDecodedImageCacheEntries,
+    this.maxBytes = defaultMaxDecodedImageCacheBytes,
     this.maxDownscaledImagePixels,
   }) : assert(maxDownscaledImagePixels == null || maxDownscaledImagePixels > 0);
 
@@ -156,52 +189,49 @@ class PdfImageDecodeCache {
   /// Leave this null for full-resolution rendering.
   final int? maxDownscaledImagePixels;
 
-  final _entries = <_ImageDecodeKey, _DecodedImage>{};
-  var _bytes = 0;
+  final entries = <ImageDecodeKey, DecodedImage>{};
+  var bytes = 0;
 
   /// The current number of decoded images in the cache.
-  int get entryCount => _entries.length;
+  int get entryCount => entries.length;
 
   /// The current total byte size of decoded image data.
-  int get byteCount => _bytes;
+  int get byteCount => bytes;
 
   /// Removes all decoded images from the cache.
   void clear() {
-    _entries.clear();
-    _bytes = 0;
+    entries.clear();
+    bytes = 0;
   }
 
-  _DecodedImage? _decode(
-    _ImageDrawRequest request,
-    cos.CosDocument cosDocument,
-  ) {
-    final key = _ImageDecodeKey.from(request);
-    final cached = _entries.remove(key);
+  DecodedImage? decode(ImageDrawRequest request, cos.CosDocument cosDocument) {
+    final key = ImageDecodeKey.from(request);
+    final cached = entries.remove(key);
     if (cached != null) {
-      _entries[key] = cached;
+      entries[key] = cached;
       return cached;
     }
 
-    final decoded = _decodePdfImage(request, cosDocument);
+    final decoded = decodePdfImage(request, cosDocument);
     if (decoded == null) return null;
-    final cachedDecoded = _downscaleForCache(decoded, maxDownscaledImagePixels);
-    _entries[key] = cachedDecoded;
-    _bytes += cachedDecoded.byteLength;
-    _trim();
+    final cachedDecoded = downscaleForCache(decoded, maxDownscaledImagePixels);
+    entries[key] = cachedDecoded;
+    bytes += cachedDecoded.byteLength;
+    trim();
     return cachedDecoded;
   }
 
-  void _trim() {
-    while (_entries.length > maxEntries || _bytes > maxBytes) {
-      final key = _entries.keys.first;
-      final removed = _entries.remove(key);
+  void trim() {
+    while (entries.length > maxEntries || bytes > maxBytes) {
+      final key = entries.keys.first;
+      final removed = entries.remove(key);
       if (removed == null) break;
-      _bytes -= removed.byteLength;
+      bytes -= removed.byteLength;
     }
   }
 }
 
-_DecodedImage _downscaleForCache(_DecodedImage decoded, int? maxPixels) {
+DecodedImage downscaleForCache(DecodedImage decoded, int? maxPixels) {
   if (maxPixels == null) return decoded;
   final pixelCount = decoded.width * decoded.height;
   if (pixelCount <= maxPixels) return decoded;
@@ -228,7 +258,7 @@ _DecodedImage _downscaleForCache(_DecodedImage decoded, int? maxPixels) {
     final uy = 1 - (y + 0.5) / height;
     for (var x = 0; x < width; x++) {
       final ux = (x + 0.5) / width;
-      final sample = _sampleImageBox(
+      final sample = sampleImageBox(
         decoded.rgba,
         decoded.width,
         decoded.height,
@@ -246,11 +276,11 @@ _DecodedImage _downscaleForCache(_DecodedImage decoded, int? maxPixels) {
       dstOffset += 4;
     }
   }
-  return _DecodedImage(width, height, rgba, opaque: opaque);
+  return DecodedImage(width, height, rgba, opaque: opaque);
 }
 
-class _ImageDecodeKey {
-  const _ImageDecodeKey(
+class ImageDecodeKey {
+  const ImageDecodeKey(
     this.streamId,
     this.colorContextKey,
     this.isStencil,
@@ -259,7 +289,7 @@ class _ImageDecodeKey {
     this.stencilB,
   );
 
-  factory _ImageDecodeKey.from(_ImageDrawRequest request) => _ImageDecodeKey(
+  factory ImageDecodeKey.from(ImageDrawRequest request) => ImageDecodeKey(
     identityHashCode(request.request.stream),
     request.colorContext.cacheKey,
     request.request.isStencil,
@@ -277,7 +307,7 @@ class _ImageDecodeKey {
 
   @override
   bool operator ==(Object other) =>
-      other is _ImageDecodeKey &&
+      other is ImageDecodeKey &&
       streamId == other.streamId &&
       colorContextKey == other.colorContextKey &&
       isStencil == other.isStencil &&
@@ -296,32 +326,32 @@ class _ImageDecodeKey {
   );
 }
 
-_DecodedImage? _decodePdfImage(
-  _ImageDrawRequest drawRequest,
+DecodedImage? decodePdfImage(
+  ImageDrawRequest drawRequest,
   cos.CosDocument cosDocument,
-) => _decodePdfImageInternal(drawRequest, cosDocument, applySoftMask: true);
+) => decodePdfImageInternal(drawRequest, cosDocument, applySoftMask: true);
 
-_DecodedImage? _decodePdfImageInternal(
-  _ImageDrawRequest drawRequest,
+DecodedImage? decodePdfImageInternal(
+  ImageDrawRequest drawRequest,
   cos.CosDocument cosDocument, {
   required bool applySoftMask,
 }) {
   final request = drawRequest.request;
   final dict = request.stream.dictionary;
-  final width = _intValue(cosDocument.resolve(dict['Width']));
-  final height = _intValue(cosDocument.resolve(dict['Height']));
+  final width = intValue(cosDocument.resolve(dict['Width']));
+  final height = intValue(cosDocument.resolve(dict['Height']));
   if (width <= 0 || height <= 0) return null;
   if (request.isStencil) {
-    return _decodeStencilImage(request, cosDocument, width, height);
+    return decodeStencilImage(request, cosDocument, width, height);
   }
 
-  final bits = _intValue(cosDocument.resolve(dict['BitsPerComponent']));
-  final colorSpace = _ImageColorSpace.parse(
+  final bits = intValue(cosDocument.resolve(dict['BitsPerComponent']));
+  final colorSpace = ImageColorSpace.parse(
     cosDocument,
     dict['ColorSpace'],
     context: drawRequest.colorContext,
   );
-  final filters = _filterNames(cosDocument, dict);
+  final filters = filterNames(cosDocument, dict);
   if (filters.contains('JPXDecode')) {
     final bytes = cosDocument.decodeStreamData(
       request.stream,
@@ -331,10 +361,10 @@ _DecodedImage? _decodePdfImageInternal(
     if (decoded == null) return null;
     if (colorSpace != null &&
         colorSpace.inputComponents == decoded.components) {
-      return _applyImageSoftMask(
+      return applyImageSoftMask(
         cosDocument,
         dict,
-        _decodeSampledImage(
+        decodeSampledImage(
           cosDocument,
           dict,
           decoded.samples,
@@ -347,10 +377,10 @@ _DecodedImage? _decodePdfImageInternal(
         applySoftMask: applySoftMask,
       );
     }
-    return _applyImageSoftMask(
+    return applyImageSoftMask(
       cosDocument,
       dict,
-      _decodeJpxWithoutPdfColorSpace(decoded),
+      decodeJpxWithoutPdfColorSpace(decoded),
       drawRequest.colorContext,
       applySoftMask: applySoftMask,
     );
@@ -360,10 +390,10 @@ _DecodedImage? _decodePdfImageInternal(
       request.stream,
       stopBeforeFilter: filters.contains('DCTDecode') ? 'DCTDecode' : 'DCT',
     );
-    if (colorSpace?.kind == _ImageColorSpaceKind.cmyk) {
-      final decoded = _decodeCmykJpeg(cosDocument, dict, bytes, colorSpace!);
+    if (colorSpace?.kind == ImageColorSpaceKind.cmyk) {
+      final decoded = decodeCmykJpeg(cosDocument, dict, bytes, colorSpace!);
       if (decoded != null) {
-        return _applyImageSoftMask(
+        return applyImageSoftMask(
           cosDocument,
           dict,
           decoded,
@@ -376,29 +406,23 @@ _DecodedImage? _decodePdfImageInternal(
     if (decoded == null) return null;
     final rgba = decoded.getBytes(order: image.ChannelOrder.rgba, alpha: 255);
     if (colorSpace != null && bits > 0) {
-      _applyDecodedRgbImageColorSpace(
-        rgba,
-        cosDocument,
-        dict,
-        colorSpace,
-        bits,
-      );
+      applyDecodedRgbImageColorSpace(rgba, cosDocument, dict, colorSpace, bits);
     }
-    return _applyImageSoftMask(
+    return applyImageSoftMask(
       cosDocument,
       dict,
-      _DecodedImage(decoded.width, decoded.height, rgba, opaque: true),
+      DecodedImage(decoded.width, decoded.height, rgba, opaque: true),
       drawRequest.colorContext,
       applySoftMask: applySoftMask,
     );
   }
 
-  if (!_isSupportedImageBits(bits) || colorSpace == null) return null;
+  if (!isSupportedImageBits(bits) || colorSpace == null) return null;
   final data = cosDocument.decodeStreamData(request.stream);
-  return _applyImageSoftMask(
+  return applyImageSoftMask(
     cosDocument,
     dict,
-    _decodeSampledImage(
+    decodeSampledImage(
       cosDocument,
       dict,
       data,
@@ -412,19 +436,19 @@ _DecodedImage? _decodePdfImageInternal(
   );
 }
 
-_DecodedImage? _applyImageSoftMask(
+DecodedImage? applyImageSoftMask(
   cos.CosDocument cosDocument,
   cos.CosDictionary imageDict,
-  _DecodedImage? decoded,
-  _ImageColorContext colorContext, {
+  DecodedImage? decoded,
+  ImageColorContext colorContext, {
   required bool applySoftMask,
 }) {
   if (!applySoftMask || decoded == null) return decoded;
   final smask = cosDocument.resolve(imageDict['SMask']);
   if (smask is! cos.CosStream) return decoded;
 
-  final mask = _decodePdfImageInternal(
-    _ImageDrawRequest(
+  final mask = decodePdfImageInternal(
+    ImageDrawRequest(
       PdfImageRequest(
         stream: smask,
         transform: PdfMatrix.identity,
@@ -449,7 +473,7 @@ _DecodedImage? _applyImageSoftMask(
       final maskX = (x * mask.width ~/ decoded.width).clamp(0, mask.width - 1);
       final maskOffset = (maskY * mask.width + maskX) * 4;
       final maskAlpha = mask.rgba[maskOffset + 3];
-      final maskLum = _luminance(
+      final maskLum = luminance(
         mask.rgba[maskOffset],
         mask.rgba[maskOffset + 1],
         mask.rgba[maskOffset + 2],
@@ -459,10 +483,10 @@ _DecodedImage? _applyImageSoftMask(
       if (rgba[dstOffset + 3] < 255) opaque = false;
     }
   }
-  return _DecodedImage(decoded.width, decoded.height, rgba, opaque: opaque);
+  return DecodedImage(decoded.width, decoded.height, rgba, opaque: opaque);
 }
 
-_DecodedImage? _decodeJpxWithoutPdfColorSpace(cos.JpxImage image) {
+DecodedImage? decodeJpxWithoutPdfColorSpace(cos.JpxImage image) {
   final pixelCount = image.width * image.height;
   if (image.samples.length < pixelCount * image.components) return null;
   final rgba = Uint8List(pixelCount * 4);
@@ -489,23 +513,23 @@ _DecodedImage? _decodeJpxWithoutPdfColorSpace(cos.JpxImage image) {
     default:
       return null;
   }
-  return _DecodedImage(image.width, image.height, rgba, opaque: true);
+  return DecodedImage(image.width, image.height, rgba, opaque: true);
 }
 
-_DecodedImage? _decodeSampledImage(
+DecodedImage? decodeSampledImage(
   cos.CosDocument cosDocument,
   cos.CosDictionary dict,
   Uint8List data,
   int width,
   int height,
   int bits,
-  _ImageColorSpace colorSpace,
+  ImageColorSpace colorSpace,
 ) {
   final pixelCount = width * height;
   final components = colorSpace.inputComponents;
-  if (!_hasEnoughSamples(data, pixelCount * components, bits)) return null;
+  if (!hasEnoughSamples(data, pixelCount * components, bits)) return null;
 
-  final decode = _ImageDecodeRanges.parse(
+  final decode = ImageDecodeRanges.parse(
     cosDocument,
     dict['Decode'],
     colorSpace,
@@ -519,12 +543,12 @@ _DecodedImage? _decodeSampledImage(
     math.max(1, colorSpace.inputComponents),
     0,
   );
-  final iccTransform = _iccTransformFor(colorSpace);
+  final iccTransform = iccTransformFor(colorSpace);
   for (var i = 0; i < pixelCount; i++) {
     switch (colorSpace.kind) {
-      case _ImageColorSpaceKind.gray:
+      case ImageColorSpaceKind.gray:
         componentsBuffer[0] = decode.toByte(
-          _readSample(data, sampleIndex++, bits),
+          readSample(data, sampleIndex++, bits),
           bits,
           0,
         );
@@ -532,19 +556,19 @@ _DecodedImage? _decodeSampledImage(
         rgba[dstOffset] = rgb[0];
         rgba[dstOffset + 1] = rgb[1];
         rgba[dstOffset + 2] = rgb[2];
-      case _ImageColorSpaceKind.rgb:
+      case ImageColorSpaceKind.rgb:
         componentsBuffer[0] = decode.toByte(
-          _readSample(data, sampleIndex++, bits),
+          readSample(data, sampleIndex++, bits),
           bits,
           0,
         );
         componentsBuffer[1] = decode.toByte(
-          _readSample(data, sampleIndex++, bits),
+          readSample(data, sampleIndex++, bits),
           bits,
           1,
         );
         componentsBuffer[2] = decode.toByte(
-          _readSample(data, sampleIndex++, bits),
+          readSample(data, sampleIndex++, bits),
           bits,
           2,
         );
@@ -552,24 +576,24 @@ _DecodedImage? _decodeSampledImage(
         rgba[dstOffset] = rgb[0];
         rgba[dstOffset + 1] = rgb[1];
         rgba[dstOffset + 2] = rgb[2];
-      case _ImageColorSpaceKind.cmyk:
+      case ImageColorSpaceKind.cmyk:
         componentsBuffer[0] = decode.toByte(
-          _readSample(data, sampleIndex++, bits),
+          readSample(data, sampleIndex++, bits),
           bits,
           0,
         );
         componentsBuffer[1] = decode.toByte(
-          _readSample(data, sampleIndex++, bits),
+          readSample(data, sampleIndex++, bits),
           bits,
           1,
         );
         componentsBuffer[2] = decode.toByte(
-          _readSample(data, sampleIndex++, bits),
+          readSample(data, sampleIndex++, bits),
           bits,
           2,
         );
         componentsBuffer[3] = decode.toByte(
-          _readSample(data, sampleIndex++, bits),
+          readSample(data, sampleIndex++, bits),
           bits,
           3,
         );
@@ -577,25 +601,25 @@ _DecodedImage? _decodeSampledImage(
         rgba[dstOffset] = rgb[0];
         rgba[dstOffset + 1] = rgb[1];
         rgba[dstOffset + 2] = rgb[2];
-      case _ImageColorSpaceKind.indexed:
+      case ImageColorSpaceKind.indexed:
         final index = decode.toIndex(
-          _readSample(data, sampleIndex++, bits),
+          readSample(data, sampleIndex++, bits),
           bits,
           colorSpace.highValue,
         );
-        _setIndexedColor(rgba, dstOffset, colorSpace, index, rgb);
+        setIndexedColor(rgba, dstOffset, colorSpace, index, rgb);
     }
     rgba[dstOffset + 3] = 255;
     dstOffset += 4;
   }
-  return _DecodedImage(width, height, rgba, opaque: true);
+  return DecodedImage(width, height, rgba, opaque: true);
 }
 
-_DecodedImage? _decodeCmykJpeg(
+DecodedImage? decodeCmykJpeg(
   cos.CosDocument cosDocument,
   cos.CosDictionary dict,
   Uint8List bytes,
-  _ImageColorSpace colorSpace,
+  ImageColorSpace colorSpace,
 ) {
   try {
     final jpeg = image_internal.JpegData()..read(bytes);
@@ -604,7 +628,7 @@ _DecodedImage? _decodeCmykJpeg(
     final height = jpeg.height ?? 0;
     if (width <= 0 || height <= 0) return null;
 
-    final decode = _ImageDecodeRanges.parse(
+    final decode = ImageDecodeRanges.parse(
       cosDocument,
       dict['Decode'],
       colorSpace,
@@ -619,7 +643,7 @@ _DecodedImage? _decodeCmykJpeg(
     final c4 = jpeg.components[3];
     final colorTransform = (jpeg.adobe?.transformCode ?? 0) != 0;
     final componentsBuffer = List<int>.filled(4, 0);
-    final iccTransform = _iccTransformFor(colorSpace);
+    final iccTransform = iccTransformFor(colorSpace);
     var dstOffset = 0;
 
     for (var y = 0; y < height; y++) {
@@ -663,13 +687,13 @@ _DecodedImage? _decodeCmykJpeg(
         dstOffset += 4;
       }
     }
-    return _DecodedImage(width, height, rgba, opaque: true);
+    return DecodedImage(width, height, rgba, opaque: true);
   } on Exception {
     return null;
   }
 }
 
-int _sampleImageBilinear(
+int sampleImageBilinear(
   Uint8List rgba,
   int width,
   int height,
@@ -739,7 +763,7 @@ int _sampleImageBilinear(
   return r | (g << 8) | (b << 16) | (a << 24);
 }
 
-int _sampleImageBox(
+int sampleImageBox(
   Uint8List rgba,
   int width,
   int height,
@@ -779,7 +803,7 @@ int _sampleImageBox(
       total += weight;
     }
   }
-  if (total <= 0) return _sampleImageBilinear(rgba, width, height, ux, uy);
+  if (total <= 0) return sampleImageBilinear(rgba, width, height, ux, uy);
   final rr = (r / total).round().clamp(0, 255).toInt();
   final gg = (g / total).round().clamp(0, 255).toInt();
   final bb = (b / total).round().clamp(0, 255).toInt();
@@ -787,7 +811,7 @@ int _sampleImageBox(
   return rr | (gg << 8) | (bb << 16) | (aa << 24);
 }
 
-_DecodedImage? _decodeStencilImage(
+DecodedImage? decodeStencilImage(
   PdfImageRequest request,
   cos.CosDocument cosDocument,
   int width,
@@ -813,16 +837,16 @@ _DecodedImage? _decodeStencilImage(
       rgba[offset + 3] = painted ? 255 : 0;
     }
   }
-  return _DecodedImage(width, height, rgba, opaque: false);
+  return DecodedImage(width, height, rgba, opaque: false);
 }
 
-bool _isSupportedImageBits(int bits) =>
+bool isSupportedImageBits(int bits) =>
     bits == 1 || bits == 2 || bits == 4 || bits == 8;
 
-bool _hasEnoughSamples(Uint8List data, int sampleCount, int bits) =>
+bool hasEnoughSamples(Uint8List data, int sampleCount, int bits) =>
     data.length * 8 >= sampleCount * bits;
 
-int _readSample(Uint8List data, int sampleIndex, int bits) {
+int readSample(Uint8List data, int sampleIndex, int bits) {
   if (bits == 8) return data[sampleIndex];
   final bitOffset = sampleIndex * bits;
   final byte = data[bitOffset >> 3];
@@ -830,22 +854,22 @@ int _readSample(Uint8List data, int sampleIndex, int bits) {
   return (byte >> shift) & ((1 << bits) - 1);
 }
 
-void _cmykToRgb(int c, int m, int y, int k, List<int> rgb) {
+void cmykToRgb(int c, int m, int y, int k, List<int> rgb) {
   pdfiumCmykToRgb(c, m, y, k, rgb);
 }
 
-void _applyDecodedRgbImageColorSpace(
+void applyDecodedRgbImageColorSpace(
   Uint8List rgba,
   cos.CosDocument cosDocument,
   cos.CosDictionary dict,
-  _ImageColorSpace colorSpace,
+  ImageColorSpace colorSpace,
   int bits,
 ) {
-  if (colorSpace.kind == _ImageColorSpaceKind.cmyk ||
-      colorSpace.kind == _ImageColorSpaceKind.indexed) {
+  if (colorSpace.kind == ImageColorSpaceKind.cmyk ||
+      colorSpace.kind == ImageColorSpaceKind.indexed) {
     return;
   }
-  final decode = _ImageDecodeRanges.parse(
+  final decode = ImageDecodeRanges.parse(
     cosDocument,
     dict['Decode'],
     colorSpace,
@@ -855,9 +879,9 @@ void _applyDecodedRgbImageColorSpace(
 
   final components = List<int>.filled(colorSpace.inputComponents, 0);
   final rgb = List<int>.filled(3, 0);
-  final iccTransform = _iccTransformFor(colorSpace);
+  final iccTransform = iccTransformFor(colorSpace);
   for (var i = 0; i < rgba.length; i += 4) {
-    if (colorSpace.kind == _ImageColorSpaceKind.gray) {
+    if (colorSpace.kind == ImageColorSpaceKind.gray) {
       components[0] = decode.toByte(rgba[i], 8, 0);
     } else {
       components[0] = decode.toByte(rgba[i], 8, 0);
@@ -871,10 +895,10 @@ void _applyDecodedRgbImageColorSpace(
   }
 }
 
-void _setIndexedColor(
+void setIndexedColor(
   Uint8List rgba,
   int dstOffset,
-  _ImageColorSpace indexed,
+  ImageColorSpace indexed,
   int index,
   List<int> rgb,
 ) {
@@ -890,10 +914,10 @@ void _setIndexedColor(
   rgba[dstOffset + 2] = rgb[2];
 }
 
-enum _ImageColorSpaceKind { gray, rgb, cmyk, indexed }
+enum ImageColorSpaceKind { gray, rgb, cmyk, indexed }
 
-class _ImageColorSpace {
-  const _ImageColorSpace._(
+class ImageColorSpace {
+  const ImageColorSpace.internal(
     this.kind, {
     this.base,
     this.lookup,
@@ -901,76 +925,82 @@ class _ImageColorSpace {
     this.iccProfile,
   });
 
-  factory _ImageColorSpace.gray({IccProfile? iccProfile}) =>
-      _ImageColorSpace._(_ImageColorSpaceKind.gray, iccProfile: iccProfile);
+  factory ImageColorSpace.gray({IccProfile? iccProfile}) =>
+      ImageColorSpace.internal(
+        ImageColorSpaceKind.gray,
+        iccProfile: iccProfile,
+      );
 
-  factory _ImageColorSpace.rgb({IccProfile? iccProfile}) =>
-      _ImageColorSpace._(_ImageColorSpaceKind.rgb, iccProfile: iccProfile);
+  factory ImageColorSpace.rgb({IccProfile? iccProfile}) =>
+      ImageColorSpace.internal(ImageColorSpaceKind.rgb, iccProfile: iccProfile);
 
-  factory _ImageColorSpace.cmyk({IccProfile? iccProfile}) =>
-      _ImageColorSpace._(_ImageColorSpaceKind.cmyk, iccProfile: iccProfile);
+  factory ImageColorSpace.cmyk({IccProfile? iccProfile}) =>
+      ImageColorSpace.internal(
+        ImageColorSpaceKind.cmyk,
+        iccProfile: iccProfile,
+      );
 
-  factory _ImageColorSpace.indexed({
-    required _ImageColorSpace base,
+  factory ImageColorSpace.indexed({
+    required ImageColorSpace base,
     required Uint8List lookup,
     required int highValue,
-  }) => _ImageColorSpace._(
-    _ImageColorSpaceKind.indexed,
+  }) => ImageColorSpace.internal(
+    ImageColorSpaceKind.indexed,
     base: base,
     lookup: lookup,
     highValue: highValue,
   );
 
-  final _ImageColorSpaceKind kind;
-  final _ImageColorSpace? base;
+  final ImageColorSpaceKind kind;
+  final ImageColorSpace? base;
   final Uint8List? lookup;
   final int highValue;
   final IccProfile? iccProfile;
 
   int get inputComponents => switch (kind) {
-    _ImageColorSpaceKind.gray => iccProfile?.channels ?? 1,
-    _ImageColorSpaceKind.rgb => iccProfile?.channels ?? 3,
-    _ImageColorSpaceKind.cmyk => iccProfile?.channels ?? 4,
-    _ImageColorSpaceKind.indexed => 1,
+    ImageColorSpaceKind.gray => iccProfile?.channels ?? 1,
+    ImageColorSpaceKind.rgb => iccProfile?.channels ?? 3,
+    ImageColorSpaceKind.cmyk => iccProfile?.channels ?? 4,
+    ImageColorSpaceKind.indexed => 1,
   };
 
   void toRgbBytes(
     List<int> components,
     List<int> rgb, [
-    _IccColorTransform? iccTransform,
+    IccColorTransform? iccTransform,
   ]) {
     final profile = iccProfile;
     if (profile != null && components.length >= profile.channels) {
-      (iccTransform ?? _IccColorTransform(profile)).toRgbBytes(components, rgb);
+      (iccTransform ?? IccColorTransform(profile)).toRgbBytes(components, rgb);
       return;
     }
     switch (kind) {
-      case _ImageColorSpaceKind.gray:
+      case ImageColorSpaceKind.gray:
         final gray = components.isEmpty ? 0 : components[0];
         rgb[0] = gray;
         rgb[1] = gray;
         rgb[2] = gray;
-      case _ImageColorSpaceKind.rgb:
+      case ImageColorSpaceKind.rgb:
         rgb[0] = components.isEmpty ? 0 : components[0];
         rgb[1] = components.length < 2 ? 0 : components[1];
         rgb[2] = components.length < 3 ? 0 : components[2];
-      case _ImageColorSpaceKind.cmyk:
-        _cmykToRgb(
+      case ImageColorSpaceKind.cmyk:
+        cmykToRgb(
           components.isEmpty ? 0 : components[0],
           components.length < 2 ? 0 : components[1],
           components.length < 3 ? 0 : components[2],
           components.length < 4 ? 0 : components[3],
           rgb,
         );
-      case _ImageColorSpaceKind.indexed:
+      case ImageColorSpaceKind.indexed:
         break;
     }
   }
 
-  static _ImageColorSpace? parse(
+  static ImageColorSpace? parse(
     cos.CosDocument cosDocument,
     cos.CosObject? object, {
-    _ImageColorContext? context,
+    ImageColorContext? context,
     bool useDeviceDefaults = true,
     Set<String>? resolvingNames,
   }) {
@@ -979,16 +1009,16 @@ class _ImageColorSpace {
       return switch (resolved.value) {
         'DeviceGray' || 'G' =>
           useDeviceDefaults
-              ? context?.defaultGray ?? _ImageColorSpace.gray()
-              : _ImageColorSpace.gray(),
+              ? context?.defaultGray ?? ImageColorSpace.gray()
+              : ImageColorSpace.gray(),
         'DeviceRGB' || 'RGB' =>
           useDeviceDefaults
-              ? context?.defaultRgb ?? _ImageColorSpace.rgb()
-              : _ImageColorSpace.rgb(),
+              ? context?.defaultRgb ?? ImageColorSpace.rgb()
+              : ImageColorSpace.rgb(),
         'DeviceCMYK' || 'CMYK' =>
           useDeviceDefaults
-              ? context?.defaultCmyk ?? _ImageColorSpace.cmyk()
-              : _ImageColorSpace.cmyk(),
+              ? context?.defaultCmyk ?? ImageColorSpace.cmyk()
+              : ImageColorSpace.cmyk(),
         _ => context?.resolveNamed(
           cosDocument,
           resolved.value,
@@ -999,7 +1029,7 @@ class _ImageColorSpace {
     }
     if (resolved is! cos.CosArray || resolved.length == 0) return null;
 
-    final family = _nameValue(cosDocument.resolve(resolved[0]));
+    final family = nameValue(cosDocument.resolve(resolved[0]));
     if ((family == 'Indexed' || family == 'I') && resolved.length >= 4) {
       final base = parse(
         cosDocument,
@@ -1008,13 +1038,13 @@ class _ImageColorSpace {
         useDeviceDefaults: useDeviceDefaults,
         resolvingNames: resolvingNames,
       );
-      if (base == null || base.kind == _ImageColorSpaceKind.indexed) {
+      if (base == null || base.kind == ImageColorSpaceKind.indexed) {
         return null;
       }
-      final highValue = _intValue(cosDocument.resolve(resolved[2]));
-      final lookup = _lookupBytes(cosDocument, resolved[3]);
+      final highValue = intValue(cosDocument.resolve(resolved[2]));
+      final lookup = lookupBytes(cosDocument, resolved[3]);
       if (highValue < 0 || lookup == null) return null;
-      return _ImageColorSpace.indexed(
+      return ImageColorSpace.indexed(
         base: base,
         lookup: lookup,
         highValue: highValue,
@@ -1023,10 +1053,10 @@ class _ImageColorSpace {
     if (family == 'ICCBased' && resolved.length >= 2) {
       final profile = cosDocument.resolve(resolved[1]);
       if (profile is! cos.CosStream) return null;
-      final n = _intValue(cosDocument.resolve(profile.dictionary['N']));
-      final iccProfile = _parseIccProfile(cosDocument, profile);
+      final n = intValue(cosDocument.resolve(profile.dictionary['N']));
+      final iccProfile = parseIccProfile(cosDocument, profile);
       if (iccProfile != null && iccProfile.channels == n) {
-        return _iccColorSpace(n, iccProfile);
+        return iccColorSpace(n, iccProfile);
       }
       final alternate = parse(
         cosDocument,
@@ -1035,69 +1065,69 @@ class _ImageColorSpace {
         useDeviceDefaults: false,
         resolvingNames: resolvingNames,
       );
-      return alternate ?? _deviceColorSpaceForComponents(n);
+      return alternate ?? deviceColorSpaceForComponents(n);
     }
     return null;
   }
 }
 
-int _unitToByte(double value) => (value.clamp(0, 1) * 255).round();
+int unitToByte(double value) => (value.clamp(0, 1) * 255).round();
 
-_ImageColorSpace? _iccColorSpace(int components, IccProfile profile) =>
+ImageColorSpace? iccColorSpace(int components, IccProfile profile) =>
     switch (components) {
-      1 => _ImageColorSpace.gray(iccProfile: profile),
-      3 => _ImageColorSpace.rgb(iccProfile: profile),
-      4 => _ImageColorSpace.cmyk(iccProfile: profile),
+      1 => ImageColorSpace.gray(iccProfile: profile),
+      3 => ImageColorSpace.rgb(iccProfile: profile),
+      4 => ImageColorSpace.cmyk(iccProfile: profile),
       _ => null,
     };
 
-_ImageColorSpace? _deviceColorSpaceForComponents(int components) =>
+ImageColorSpace? deviceColorSpaceForComponents(int components) =>
     switch (components) {
-      1 => _ImageColorSpace.gray(),
-      3 => _ImageColorSpace.rgb(),
-      4 => _ImageColorSpace.cmyk(),
+      1 => ImageColorSpace.gray(),
+      3 => ImageColorSpace.rgb(),
+      4 => ImageColorSpace.cmyk(),
       _ => null,
     };
 
-IccProfile? _parseIccProfile(
+IccProfile? parseIccProfile(
   cos.CosDocument cosDocument,
   cos.CosStream profile,
 ) {
-  final cached = _iccProfileCache[profile];
+  final cached = iccProfileCache[profile];
   if (cached != null) return cached.profile;
   try {
     final bytes = cosDocument.decodeStreamData(profile);
-    if (_isLikelySrgbIccProfile(bytes)) {
-      _iccProfileCache[profile] = const _CachedIccProfile(null);
+    if (isLikelySrgbIccProfile(bytes)) {
+      iccProfileCache[profile] = const CachedIccProfile(null);
       return null;
     }
     final parsed = IccProfile.parse(bytes);
-    _iccProfileCache[profile] = _CachedIccProfile(parsed);
+    iccProfileCache[profile] = CachedIccProfile(parsed);
     return parsed;
   } on Exception {
-    _iccProfileCache[profile] = const _CachedIccProfile(null);
+    iccProfileCache[profile] = const CachedIccProfile(null);
     return null;
   }
 }
 
-bool _isLikelySrgbIccProfile(Uint8List bytes) {
+bool isLikelySrgbIccProfile(Uint8List bytes) {
   if (bytes.length < 128) return false;
   if (String.fromCharCodes(bytes, 16, 20) != 'RGB ') return false;
-  return _containsAsciiIgnoreCase(bytes, 'sRGB') ||
-      (_containsAsciiIgnoreCase(bytes, 'IEC') &&
-          _containsAsciiIgnoreCase(bytes, '61966'));
+  return containsAsciiIgnoreCase(bytes, 'sRGB') ||
+      (containsAsciiIgnoreCase(bytes, 'IEC') &&
+          containsAsciiIgnoreCase(bytes, '61966'));
 }
 
-bool _containsAsciiIgnoreCase(Uint8List bytes, String needle) {
+bool containsAsciiIgnoreCase(Uint8List bytes, String needle) {
   if (needle.isEmpty || bytes.length < needle.length) return false;
   final lowerNeedle = [
-    for (var i = 0; i < needle.length; i++) _asciiLower(needle.codeUnitAt(i)),
+    for (var i = 0; i < needle.length; i++) asciiLower(needle.codeUnitAt(i)),
   ];
   final lastStart = bytes.length - lowerNeedle.length;
   for (var start = 0; start <= lastStart; start++) {
     var matches = true;
     for (var i = 0; i < lowerNeedle.length; i++) {
-      if (_asciiLower(bytes[start + i]) != lowerNeedle[i]) {
+      if (asciiLower(bytes[start + i]) != lowerNeedle[i]) {
         matches = false;
         break;
       }
@@ -1107,37 +1137,37 @@ bool _containsAsciiIgnoreCase(Uint8List bytes, String needle) {
   return false;
 }
 
-int _asciiLower(int value) =>
+int asciiLower(int value) =>
     value >= 0x41 && value <= 0x5a ? value + 0x20 : value;
 
-_IccColorTransform? _iccTransformFor(_ImageColorSpace colorSpace) {
+IccColorTransform? iccTransformFor(ImageColorSpace colorSpace) {
   final profile = colorSpace.iccProfile;
-  return profile == null ? null : _IccColorTransform(profile);
+  return profile == null ? null : IccColorTransform(profile);
 }
 
-final _iccProfileCache = Expando<_CachedIccProfile>('dart_pdf_renderer.icc');
+final iccProfileCache = Expando<CachedIccProfile>('dart_pdf_renderer.icc');
 
-class _CachedIccProfile {
-  const _CachedIccProfile(this.profile);
+class CachedIccProfile {
+  const CachedIccProfile(this.profile);
 
   final IccProfile? profile;
 }
 
-const _maxIccTransformCacheEntries = 1 << 20;
+const maxIccTransformCacheEntries = 1 << 20;
 
-class _IccColorTransform {
-  _IccColorTransform(this.profile)
+class IccColorTransform {
+  IccColorTransform(this.profile)
     : values = List<double>.filled(profile.channels, 0, growable: false);
 
   final IccProfile profile;
   final List<double> values;
-  final _cache = <int, int>{};
+  final cache = <int, int>{};
 
   void toRgbBytes(List<int> components, List<int> rgb) {
-    final key = _componentKey(components, profile.channels);
-    final cached = _cache[key];
+    final key = componentKey(components, profile.channels);
+    final cached = cache[key];
     if (cached != null) {
-      _unpackRgb(cached, rgb);
+      unpackRgb(cached, rgb);
       return;
     }
 
@@ -1145,19 +1175,19 @@ class _IccColorTransform {
       values[i] = components[i] / 255;
     }
     final color = profile.toSrgb(values);
-    final packed = _packRgb(
-      _unitToByte(color.red),
-      _unitToByte(color.green),
-      _unitToByte(color.blue),
+    final packed = packRgb(
+      unitToByte(color.red),
+      unitToByte(color.green),
+      unitToByte(color.blue),
     );
-    if (_cache.length < _maxIccTransformCacheEntries) {
-      _cache[key] = packed;
+    if (cache.length < maxIccTransformCacheEntries) {
+      cache[key] = packed;
     }
-    _unpackRgb(packed, rgb);
+    unpackRgb(packed, rgb);
   }
 }
 
-int _componentKey(List<int> components, int channels) => switch (channels) {
+int componentKey(List<int> components, int channels) => switch (channels) {
   1 => components[0],
   3 => components[0] | (components[1] << 8) | (components[2] << 16),
   4 =>
@@ -1168,50 +1198,50 @@ int _componentKey(List<int> components, int channels) => switch (channels) {
   _ => Object.hashAll(components.take(channels)),
 };
 
-int _packRgb(int red, int green, int blue) => red | (green << 8) | (blue << 16);
+int packRgb(int red, int green, int blue) => red | (green << 8) | (blue << 16);
 
-void _unpackRgb(int packed, List<int> rgb) {
+void unpackRgb(int packed, List<int> rgb) {
   rgb[0] = packed & 0xff;
   rgb[1] = (packed >> 8) & 0xff;
   rgb[2] = (packed >> 16) & 0xff;
 }
 
-Uint8List? _lookupBytes(cos.CosDocument cosDocument, cos.CosObject object) {
+Uint8List? lookupBytes(cos.CosDocument cosDocument, cos.CosObject object) {
   final resolved = cosDocument.resolve(object);
   if (resolved is cos.CosString) return resolved.bytes;
   if (resolved is cos.CosStream) return cosDocument.decodeStreamData(resolved);
   return null;
 }
 
-class _ImageDecodeRanges {
-  const _ImageDecodeRanges(this.pairs);
+class ImageDecodeRanges {
+  const ImageDecodeRanges(this.pairs);
 
-  factory _ImageDecodeRanges.parse(
+  factory ImageDecodeRanges.parse(
     cos.CosDocument cosDocument,
     cos.CosObject? object,
-    _ImageColorSpace colorSpace,
+    ImageColorSpace colorSpace,
     int bits,
   ) {
     final components = colorSpace.inputComponents;
     final resolved = cosDocument.resolve(object);
     if (resolved is cos.CosArray && resolved.length >= components * 2) {
-      return _ImageDecodeRanges([
+      return ImageDecodeRanges([
         for (var i = 0; i < components; i++)
-          _DecodePair(
-            _numberValue(cosDocument.resolve(resolved[i * 2])),
-            _numberValue(cosDocument.resolve(resolved[i * 2 + 1])),
+          DecodePair(
+            numberValue(cosDocument.resolve(resolved[i * 2])),
+            numberValue(cosDocument.resolve(resolved[i * 2 + 1])),
           ),
       ]);
     }
-    final max = colorSpace.kind == _ImageColorSpaceKind.indexed
+    final max = colorSpace.kind == ImageColorSpaceKind.indexed
         ? ((1 << bits) - 1).toDouble()
         : 1.0;
-    return _ImageDecodeRanges([
-      for (var i = 0; i < components; i++) _DecodePair(0, max),
+    return ImageDecodeRanges([
+      for (var i = 0; i < components; i++) DecodePair(0, max),
     ]);
   }
 
-  final List<_DecodePair> pairs;
+  final List<DecodePair> pairs;
 
   bool get isDefault01 {
     for (final pair in pairs) {
@@ -1232,8 +1262,8 @@ class _ImageDecodeRanges {
   }
 }
 
-class _DecodePair {
-  const _DecodePair(this.min, this.max);
+class DecodePair {
+  const DecodePair(this.min, this.max);
 
   final double min;
   final double max;

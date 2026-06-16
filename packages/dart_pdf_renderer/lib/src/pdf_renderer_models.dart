@@ -1,4 +1,37 @@
-part of 'pdf_renderer.dart';
+// ignore_for_file: unused_import, implementation_imports
+
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:image/image.dart' as image;
+import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
+import 'package:pdf_cos/pdf_cos.dart' as cos;
+import 'package:pdf_document/pdf_document.dart';
+import 'package:pdf_graphics/pdf_graphics.dart'
+    hide
+        PdfBeginGroupCommand,
+        PdfClipPathCommand,
+        PdfDrawImageCommand,
+        PdfDrawTextCommand,
+        PdfEndGroupCommand,
+        PdfFillMeshCommand,
+        PdfFillPathCommand,
+        PdfFillPathGradientCommand,
+        PdfRestoreCommand,
+        PdfSaveCommand,
+        PdfSetBlendModeCommand,
+        PdfStrokePathCommand,
+        RecordingPdfDevice;
+import 'pdf_display_command.dart';
+import 'pdfium_cmyk.dart';
+import 'pdf_renderer.dart';
+import 'pdf_renderer_direct_device.dart';
+import 'pdf_renderer_display_list.dart';
+import 'pdf_renderer_geometry.dart';
+import 'pdf_renderer_glyph.dart';
+import 'pdf_renderer_graphics.dart';
+import 'pdf_renderer_image.dart';
+import 'pdf_renderer_recording_device.dart';
 
 class PdfPageSize {
   /// Creates a page size.
@@ -11,7 +44,7 @@ class PdfPageSize {
   final double height;
 }
 
-Uint8List _rgbaToBgra(
+Uint8List rgbaToBgra(
   Uint8List rgba, {
   required int width,
   required int height,
@@ -124,7 +157,7 @@ class PdfRenderTiming {
     glyphMaskPaintMicroseconds = 0;
   }
 
-  void _addCommandTime(PdfDisplayCommand command, int microseconds) {
+  void addCommandTime(PdfDisplayCommand command, int microseconds) {
     replayedCommands++;
     switch (command) {
       case PdfFillPathCommand() ||

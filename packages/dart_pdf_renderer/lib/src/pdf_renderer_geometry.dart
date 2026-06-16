@@ -1,18 +1,50 @@
-part of 'pdf_renderer.dart';
+// ignore_for_file: unused_import, implementation_imports
 
-class _RgbaSurface {
-  _RgbaSurface(this.width, this.height)
-    : pixels = Uint8List(width * height * 4);
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:image/image.dart' as image;
+import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
+import 'package:pdf_cos/pdf_cos.dart' as cos;
+import 'package:pdf_document/pdf_document.dart';
+import 'package:pdf_graphics/pdf_graphics.dart'
+    hide
+        PdfBeginGroupCommand,
+        PdfClipPathCommand,
+        PdfDrawImageCommand,
+        PdfDrawTextCommand,
+        PdfEndGroupCommand,
+        PdfFillMeshCommand,
+        PdfFillPathCommand,
+        PdfFillPathGradientCommand,
+        PdfRestoreCommand,
+        PdfSaveCommand,
+        PdfSetBlendModeCommand,
+        PdfStrokePathCommand,
+        RecordingPdfDevice;
+import 'pdf_display_command.dart';
+import 'pdfium_cmyk.dart';
+import 'pdf_renderer.dart';
+import 'pdf_renderer_direct_device.dart';
+import 'pdf_renderer_display_list.dart';
+import 'pdf_renderer_glyph.dart';
+import 'pdf_renderer_graphics.dart';
+import 'pdf_renderer_image.dart';
+import 'pdf_renderer_models.dart';
+import 'pdf_renderer_recording_device.dart';
+
+class RgbaSurface {
+  RgbaSurface(this.width, this.height) : pixels = Uint8List(width * height * 4);
 
   final int width;
   final int height;
   final Uint8List pixels;
-  _IntRect? _dirtyBounds;
+  IntRect? dirtyBoundsValue;
 
-  _IntRect? get dirtyBounds => _dirtyBounds;
+  IntRect? get dirtyBounds => dirtyBoundsValue;
 
   void clear(int r, int g, int b, int a) {
-    _dirtyBounds = null;
+    dirtyBoundsValue = null;
     if (Endian.host == Endian.little) {
       pixels.buffer.asUint32List().fillRange(
         0,
@@ -32,7 +64,7 @@ class _RgbaSurface {
   void blendPixel(int x, int y, int r, int g, int b, int a) {
     if (x < 0 || y < 0 || x >= width || y >= height) return;
     if (a <= 0) return;
-    markDirty(_IntRect(x, y, x + 1, y + 1));
+    markDirty(IntRect(x, y, x + 1, y + 1));
     final offset = (y * width + x) * 4;
     if (a >= 255) {
       pixels[offset] = r;
@@ -48,30 +80,30 @@ class _RgbaSurface {
     if (a > pixels[offset + 3]) pixels[offset + 3] = a;
   }
 
-  void markDirty(_IntRect bounds) {
+  void markDirty(IntRect bounds) {
     if (bounds.isEmpty) return;
-    final clipped = bounds.intersect(_IntRect(0, 0, width, height));
+    final clipped = bounds.intersect(IntRect(0, 0, width, height));
     if (clipped.isEmpty) return;
-    final current = _dirtyBounds;
-    _dirtyBounds = current == null ? clipped : current.union(clipped);
+    final current = dirtyBoundsValue;
+    dirtyBoundsValue = current == null ? clipped : current.union(clipped);
   }
 }
 
-class _Point {
-  const _Point(this.x, this.y);
+class Point {
+  const Point(this.x, this.y);
 
   final double x;
   final double y;
 
-  double distanceTo(_Point other) {
+  double distanceTo(Point other) {
     final dx = other.x - x;
     final dy = other.y - y;
     return math.sqrt(dx * dx + dy * dy);
   }
 }
 
-class _DecodedImage {
-  const _DecodedImage(
+class DecodedImage {
+  const DecodedImage(
     this.width,
     this.height,
     this.rgba, {
@@ -86,15 +118,15 @@ class _DecodedImage {
   int get byteLength => rgba.lengthInBytes;
 }
 
-class _ScanlineIntersection {
-  const _ScanlineIntersection(this.x, this.windingDelta);
+class ScanlineIntersection {
+  const ScanlineIntersection(this.x, this.windingDelta);
 
   final double x;
   final int windingDelta;
 }
 
-class _IntRect {
-  const _IntRect(this.left, this.top, this.right, this.bottom);
+class IntRect {
+  const IntRect(this.left, this.top, this.right, this.bottom);
 
   final int left;
   final int top;
@@ -105,14 +137,14 @@ class _IntRect {
   int get width => right - left;
   int get height => bottom - top;
 
-  _IntRect intersect(_IntRect other) => _IntRect(
+  IntRect intersect(IntRect other) => IntRect(
     math.max(left, other.left),
     math.max(top, other.top),
     math.min(right, other.right),
     math.min(bottom, other.bottom),
   );
 
-  _IntRect union(_IntRect other) => _IntRect(
+  IntRect union(IntRect other) => IntRect(
     math.min(left, other.left),
     math.min(top, other.top),
     math.max(right, other.right),
@@ -130,65 +162,65 @@ class _IntRect {
   String toString() => '$left,$top,$right,$bottom';
 }
 
-class _FillCoverageMask {
-  _FillCoverageMask(_IntRect bounds)
+class FillCoverageMask {
+  FillCoverageMask(IntRect bounds)
     : originX = bounds.left - 1,
       originY = bounds.top - 1,
       width = bounds.width + 2,
-      _values = Uint8List((bounds.width + 2) * (bounds.height + 2)),
-      _boundary = Uint8List((bounds.width + 2) * (bounds.height + 2));
+      values = Uint8List((bounds.width + 2) * (bounds.height + 2)),
+      boundary = Uint8List((bounds.width + 2) * (bounds.height + 2));
 
   final int originX;
   final int originY;
   final int width;
-  final Uint8List _values;
-  final Uint8List _boundary;
+  final Uint8List values;
+  final Uint8List boundary;
 
   void set(int x, int y, bool covered) {
-    _values[_offset(x, y)] = covered ? 1 : 0;
+    values[offsetOf(x, y)] = covered ? 1 : 0;
   }
 
-  bool contains(int x, int y) => _values[_offset(x, y)] != 0;
+  bool contains(int x, int y) => values[offsetOf(x, y)] != 0;
 
   void markBoundary(int x, int y) {
-    _boundary[_offset(x, y)] = 1;
+    boundary[offsetOf(x, y)] = 1;
   }
 
-  void markBoundaryTransitions(_IntRect bounds) {
+  void markBoundaryTransitions(IntRect bounds) {
     for (var y = bounds.top; y < bounds.bottom; y++) {
       for (var x = bounds.left; x < bounds.right; x++) {
-        final offset = _offset(x, y);
-        final center = _values[offset];
-        var boundary = false;
-        for (var dy = -1; dy <= 1 && !boundary; dy++) {
+        final offset = offsetOf(x, y);
+        final center = values[offset];
+        var isBoundary = false;
+        for (var dy = -1; dy <= 1 && !isBoundary; dy++) {
           final row = offset + dy * width;
           for (var dx = -1; dx <= 1; dx++) {
             if (dx == 0 && dy == 0) continue;
-            if (_values[row + dx] != center) {
-              boundary = true;
+            if (values[row + dx] != center) {
+              isBoundary = true;
               break;
             }
           }
         }
-        if (boundary) _boundary[offset] = 1;
+        if (isBoundary) boundary[offset] = 1;
       }
     }
   }
 
-  bool isBoundary(int x, int y) => _boundary[_offset(x, y)] != 0;
+  bool isBoundary(int x, int y) => boundary[offsetOf(x, y)] != 0;
 
-  int _offset(int x, int y) {
+  int offsetOf(int x, int y) {
     final localX = x - originX;
     final localY = y - originY;
     return localY * width + localX;
   }
 }
 
-class _ClipState {
-  const _ClipState(this.bounds, {this.paths = const []});
+class ClipState {
+  const ClipState(this.bounds, {this.paths = const []});
 
-  final _IntRect bounds;
-  final List<_ClipPath> paths;
+  final IntRect bounds;
+  final List<ClipPath> paths;
 
   bool contains(double x, double y) {
     if (x < bounds.left ||
@@ -199,65 +231,65 @@ class _ClipState {
     }
     for (final path in paths) {
       final inside = path.rule == PdfFillRule.evenOdd
-          ? _containsEvenOdd(path.contours, x, y)
-          : _containsNonZero(path.contours, x, y);
+          ? containsEvenOdd(path.contours, x, y)
+          : containsNonZero(path.contours, x, y);
       if (!inside) return false;
     }
     return true;
   }
 
-  _ClipState intersect(
-    _IntRect bounds, {
-    required List<List<_Point>> contours,
+  ClipState intersect(
+    IntRect bounds, {
+    required List<List<Point>> contours,
     required PdfFillRule rule,
-  }) => _ClipState(
+  }) => ClipState(
     this.bounds.intersect(bounds),
-    paths: [...paths, _ClipPath(contours, rule)],
+    paths: [...paths, ClipPath(contours, rule)],
   );
 
-  _ClipState intersectBounds(_IntRect bounds) =>
-      _ClipState(this.bounds.intersect(bounds), paths: paths);
+  ClipState intersectBounds(IntRect bounds) =>
+      ClipState(this.bounds.intersect(bounds), paths: paths);
 }
 
-class _ClipPath {
-  const _ClipPath(this.contours, this.rule);
+class ClipPath {
+  const ClipPath(this.contours, this.rule);
 
-  final List<List<_Point>> contours;
+  final List<List<Point>> contours;
   final PdfFillRule rule;
 }
 
-_Point _cubic(_Point p0, _Point p1, _Point p2, _Point p3, double t) {
+Point cubic(Point p0, Point p1, Point p2, Point p3, double t) {
   final mt = 1 - t;
   final a = mt * mt * mt;
   final b = 3 * mt * mt * t;
   final c = 3 * mt * t * t;
   final d = t * t * t;
-  return _Point(
+  return Point(
     a * p0.x + b * p1.x + c * p2.x + d * p3.x,
     a * p0.y + b * p1.y + c * p2.y + d * p3.y,
   );
 }
 
-int _cubicFlattenSegmentCount(_Point p0, _Point p1, _Point p2, _Point p3) {
+int cubicFlattenSegmentCount(Point p0, Point p1, Point p2, Point p3) {
   final left = math.min(math.min(p0.x, p1.x), math.min(p2.x, p3.x));
   final top = math.min(math.min(p0.y, p1.y), math.min(p2.y, p3.y));
   final right = math.max(math.max(p0.x, p1.x), math.max(p2.x, p3.x));
   final bottom = math.max(math.max(p0.y, p1.y), math.max(p2.y, p3.y));
   final extent = math.max(right - left, bottom - top);
-  if (extent >= 96) return _maxCubicFlattenSegments;
-  if (extent >= 48) return _midCubicFlattenSegments;
-  return _minCubicFlattenSegments;
+  if (extent >= 96) return maxCubicFlattenSegments;
+  if (extent >= 48) return midCubicFlattenSegments;
+  return minCubicFlattenSegments;
 }
 
-List<List<_Point>> _flattenPath(
+List<List<Point>> flattenPath(
   PdfPath path, {
   required PdfMatrix transform,
   bool closeOpenContours = false,
 }) {
-  final contours = <List<_Point>>[];
-  List<_Point>? current;
-  _Point? start;
-  _Point? cursor;
+  final contours = <List<Point>>[];
+  List<Point>? current;
+  Point? start;
+  Point? cursor;
 
   void closeCurrentContour() {
     final contour = current;
@@ -268,33 +300,33 @@ List<List<_Point>> _flattenPath(
     }
   }
 
-  _Point tx(double x, double y) =>
-      _Point(transform.transformX(x, y), transform.transformY(x, y));
+  Point tx(double x, double y) =>
+      Point(transform.transformX(x, y), transform.transformY(x, y));
 
   for (final segment in path.segments) {
     switch (segment) {
       case PdfMoveTo(:final x, :final y):
         closeCurrentContour();
-        current = <_Point>[];
+        current = <Point>[];
         contours.add(current);
         start = cursor = tx(x, y);
         current.add(cursor);
       case PdfLineTo(:final x, :final y):
-        current ??= <_Point>[];
+        current ??= <Point>[];
         if (!contours.contains(current)) contours.add(current);
         cursor = tx(x, y);
         current.add(cursor);
       case PdfCubicTo():
         if (cursor == null) break;
-        current ??= <_Point>[];
+        current ??= <Point>[];
         if (!contours.contains(current)) contours.add(current);
         final p0 = cursor;
         final p1 = tx(segment.x1, segment.y1);
         final p2 = tx(segment.x2, segment.y2);
         final p3 = tx(segment.x3, segment.y3);
-        final segments = _cubicFlattenSegmentCount(p0, p1, p2, p3);
+        final segments = cubicFlattenSegmentCount(p0, p1, p2, p3);
         for (var i = 1; i <= segments; i++) {
-          current.add(_cubic(p0, p1, p2, p3, i / segments));
+          current.add(cubic(p0, p1, p2, p3, i / segments));
         }
         cursor = p3;
       case PdfClosePath():
@@ -309,7 +341,7 @@ List<List<_Point>> _flattenPath(
   ];
 }
 
-bool _containsEvenOdd(List<List<_Point>> contours, double x, double y) {
+bool containsEvenOdd(List<List<Point>> contours, double x, double y) {
   var inside = false;
   for (final contour in contours) {
     for (var i = 0, j = contour.length - 1; i < contour.length; j = i++) {
@@ -324,15 +356,15 @@ bool _containsEvenOdd(List<List<_Point>> contours, double x, double y) {
   return inside;
 }
 
-bool _containsNonZero(List<List<_Point>> contours, double x, double y) {
+bool containsNonZero(List<List<Point>> contours, double x, double y) {
   var winding = 0;
   for (final contour in contours) {
     for (var i = 0, j = contour.length - 1; i < contour.length; j = i++) {
       final p1 = contour[j];
       final p2 = contour[i];
       if (p1.y <= y) {
-        if (p2.y > y && _isLeft(p1, p2, x, y) > 0) winding++;
-      } else if (p2.y <= y && _isLeft(p1, p2, x, y) < 0) {
+        if (p2.y > y && isLeft(p1, p2, x, y) > 0) winding++;
+      } else if (p2.y <= y && isLeft(p1, p2, x, y) < 0) {
         winding--;
       }
     }
@@ -340,7 +372,7 @@ bool _containsNonZero(List<List<_Point>> contours, double x, double y) {
   return winding != 0;
 }
 
-bool _isAxisAlignedRectangle(List<List<_Point>> contours) {
+bool isAxisAlignedRectangle(List<List<Point>> contours) {
   if (contours.length != 1) return false;
   final contour = contours.first;
   if (contour.length != 5) return false;
@@ -375,8 +407,8 @@ bool _isAxisAlignedRectangle(List<List<_Point>> contours) {
   return corners == 0x0f;
 }
 
-bool _isPixelAlignedRectangle(List<List<_Point>> contours, _IntRect bounds) {
-  if (!_isAxisAlignedRectangle(contours)) return false;
+bool isPixelAlignedRectangle(List<List<Point>> contours, IntRect bounds) {
+  if (!isAxisAlignedRectangle(contours)) return false;
   for (var i = 0; i < 4; i++) {
     final point = contours.first[i];
     if ((point.x - point.x.round()).abs() > 1e-6) return false;
@@ -388,13 +420,13 @@ bool _isPixelAlignedRectangle(List<List<_Point>> contours, _IntRect bounds) {
       bounds.bottom > bounds.top;
 }
 
-double _isLeft(_Point p1, _Point p2, double x, double y) =>
+double isLeft(Point p1, Point p2, double x, double y) =>
     (p2.x - p1.x) * (y - p1.y) - (x - p1.x) * (p2.y - p1.y);
 
-double _strokeCoverageAtPoint(
+double strokeCoverageAtPoint(
   double x,
   double y,
-  _Point p1,
+  Point p1,
   double dx,
   double dy,
   double lengthSquared,
@@ -412,24 +444,24 @@ double _strokeCoverageAtPoint(
   return (radius + 0.5 - distance).clamp(0.0, 1.0).toDouble();
 }
 
-int _intValue(cos.CosObject? object) => switch (object) {
+int intValue(cos.CosObject? object) => switch (object) {
   cos.CosInteger(:final value) => value,
   cos.CosReal(:final value) => value.round(),
   _ => 0,
 };
 
-double _numberValue(cos.CosObject? object) => switch (object) {
+double numberValue(cos.CosObject? object) => switch (object) {
   cos.CosInteger(:final value) => value.toDouble(),
   cos.CosReal(:final value) => value,
   _ => 0,
 };
 
-String? _nameValue(cos.CosObject? object) => switch (object) {
+String? nameValue(cos.CosObject? object) => switch (object) {
   cos.CosName(:final value) => value,
   _ => null,
 };
 
-List<String> _filterNames(cos.CosDocument cosDocument, cos.CosDictionary dict) {
+List<String> filterNames(cos.CosDocument cosDocument, cos.CosDictionary dict) {
   final filter = cosDocument.resolve(dict['Filter']);
   if (filter is cos.CosName) return [filter.value];
   if (filter is cos.CosArray) {

@@ -1,16 +1,49 @@
-part of 'pdf_renderer.dart';
+// ignore_for_file: unused_import, implementation_imports
 
-class _ImageDrawRequest {
-  const _ImageDrawRequest(this.request, this.colorContext);
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:image/image.dart' as image;
+import 'package:image/src/formats/jpeg/jpeg_data.dart' as image_internal;
+import 'package:pdf_cos/pdf_cos.dart' as cos;
+import 'package:pdf_document/pdf_document.dart';
+import 'package:pdf_graphics/pdf_graphics.dart'
+    hide
+        PdfBeginGroupCommand,
+        PdfClipPathCommand,
+        PdfDrawImageCommand,
+        PdfDrawTextCommand,
+        PdfEndGroupCommand,
+        PdfFillMeshCommand,
+        PdfFillPathCommand,
+        PdfFillPathGradientCommand,
+        PdfRestoreCommand,
+        PdfSaveCommand,
+        PdfSetBlendModeCommand,
+        PdfStrokePathCommand,
+        RecordingPdfDevice;
+import 'pdf_display_command.dart';
+import 'pdfium_cmyk.dart';
+import 'pdf_renderer.dart';
+import 'pdf_renderer_direct_device.dart';
+import 'pdf_renderer_display_list.dart';
+import 'pdf_renderer_geometry.dart';
+import 'pdf_renderer_glyph.dart';
+import 'pdf_renderer_image.dart';
+import 'pdf_renderer_models.dart';
+import 'pdf_renderer_recording_device.dart';
+
+class ImageDrawRequest {
+  const ImageDrawRequest(this.request, this.colorContext);
 
   final PdfImageRequest request;
-  final _ImageColorContext colorContext;
+  final ImageColorContext colorContext;
 }
 
-_ImageDrawRequest _transformImageDrawRequest(
-  _ImageDrawRequest request,
+ImageDrawRequest transformImageDrawRequest(
+  ImageDrawRequest request,
   PdfMatrix transform,
-) => _ImageDrawRequest(
+) => ImageDrawRequest(
   PdfImageRequest(
     stream: request.request.stream,
     transform: request.request.transform.concat(transform),
@@ -22,7 +55,7 @@ _ImageDrawRequest _transformImageDrawRequest(
   request.colorContext,
 );
 
-PdfMesh _transformMesh(PdfMesh mesh, PdfMatrix transform) => PdfMesh([
+PdfMesh transformMesh(PdfMesh mesh, PdfMatrix transform) => PdfMesh([
   for (final vertex in mesh.vertices)
     PdfMeshVertex(
       transform.transformX(vertex.x, vertex.y),
@@ -31,7 +64,7 @@ PdfMesh _transformMesh(PdfMesh mesh, PdfMatrix transform) => PdfMesh([
     ),
 ], mesh.triangles);
 
-PdfGradient _transformGradient(PdfGradient gradient, PdfMatrix transform) =>
+PdfGradient transformGradient(PdfGradient gradient, PdfMatrix transform) =>
     PdfGradient(
       isRadial: gradient.isRadial,
       coords: gradient.coords,
@@ -42,21 +75,21 @@ PdfGradient _transformGradient(PdfGradient gradient, PdfMatrix transform) =>
       extendEnd: gradient.extendEnd,
     );
 
-PdfRect _transformRect(PdfRect rect, PdfMatrix transform) {
+PdfRect transformRect(PdfRect rect, PdfMatrix transform) {
   final points = [
-    _Point(
+    Point(
       transform.transformX(rect.left, rect.top),
       transform.transformY(rect.left, rect.top),
     ),
-    _Point(
+    Point(
       transform.transformX(rect.right, rect.top),
       transform.transformY(rect.right, rect.top),
     ),
-    _Point(
+    Point(
       transform.transformX(rect.right, rect.bottom),
       transform.transformY(rect.right, rect.bottom),
     ),
-    _Point(
+    Point(
       transform.transformX(rect.left, rect.bottom),
       transform.transformY(rect.left, rect.bottom),
     ),
@@ -74,7 +107,7 @@ PdfRect _transformRect(PdfRect rect, PdfMatrix transform) {
   return PdfRect(left, top, right, bottom);
 }
 
-PdfColor? _axialGradientColorAt(PdfGradient gradient, double x, double y) {
+PdfColor? axialGradientColorAt(PdfGradient gradient, double x, double y) {
   final coords = gradient.coords;
   final matrix = gradient.transform;
   final x0 = matrix.transformX(coords[0], coords[1]);
@@ -95,10 +128,10 @@ PdfColor? _axialGradientColorAt(PdfGradient gradient, double x, double y) {
     if (!gradient.extendEnd) return null;
     t = 1;
   }
-  return _interpolateGradientColor(gradient, t);
+  return interpolateGradientColor(gradient, t);
 }
 
-PdfColor? _interpolateGradientColor(PdfGradient gradient, double t) {
+PdfColor? interpolateGradientColor(PdfGradient gradient, double t) {
   final colors = gradient.colors;
   if (colors.isEmpty) return null;
   if (colors.length == 1) return colors.first;
@@ -106,7 +139,7 @@ PdfColor? _interpolateGradientColor(PdfGradient gradient, double t) {
   if (stops.length != colors.length) {
     final scaled = t.clamp(0.0, 1.0) * (colors.length - 1);
     final index = scaled.floor().clamp(0, colors.length - 2);
-    return _lerpColor(colors[index], colors[index + 1], scaled - index);
+    return lerpColor(colors[index], colors[index + 1], scaled - index);
   }
   if (t <= stops.first) return colors.first;
   for (var i = 1; i < stops.length; i++) {
@@ -115,13 +148,13 @@ PdfColor? _interpolateGradientColor(PdfGradient gradient, double t) {
       final previous = stops[i - 1];
       final span = stop - previous;
       final local = span.abs() <= 1e-12 ? 0.0 : (t - previous) / span;
-      return _lerpColor(colors[i - 1], colors[i], local);
+      return lerpColor(colors[i - 1], colors[i], local);
     }
   }
   return colors.last;
 }
 
-PdfColor _lerpColor(PdfColor a, PdfColor b, double t) {
+PdfColor lerpColor(PdfColor a, PdfColor b, double t) {
   final local = t.clamp(0.0, 1.0);
   return PdfColor(
     a.red + (b.red - a.red) * local,
@@ -130,63 +163,51 @@ PdfColor _lerpColor(PdfColor a, PdfColor b, double t) {
   );
 }
 
-double _luminance(int r, int g, int b) =>
+double luminance(int r, int g, int b) =>
     (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
 
-PdfDisplayRect? _pathBounds(PdfPath path) {
-  final points = <_Point>[];
+PdfDisplayRect? pathBounds(PdfPath path) {
+  final points = <Point>[];
   for (final segment in path.segments) {
     switch (segment) {
       case PdfMoveTo(:final x, :final y) || PdfLineTo(:final x, :final y):
-        points.add(_Point(x, y));
+        points.add(Point(x, y));
       case PdfCubicTo():
-        points.add(_Point(segment.x1, segment.y1));
-        points.add(_Point(segment.x2, segment.y2));
-        points.add(_Point(segment.x3, segment.y3));
+        points.add(Point(segment.x1, segment.y1));
+        points.add(Point(segment.x2, segment.y2));
+        points.add(Point(segment.x3, segment.y3));
       case PdfClosePath():
         break;
     }
   }
-  return _pointsBounds(points);
+  return pointsBounds(points);
 }
 
-PdfDisplayRect? _textRunBounds(PdfTextRun run) {
+PdfDisplayRect? textRunBounds(PdfTextRun run) {
   final matrix = run.transform;
-  return _pointsBounds([
-    _Point(matrix.transformX(0, -0.25), matrix.transformY(0, -0.25)),
-    _Point(
+  return pointsBounds([
+    Point(matrix.transformX(0, -0.25), matrix.transformY(0, -0.25)),
+    Point(
       matrix.transformX(run.width, -0.25),
       matrix.transformY(run.width, -0.25),
     ),
-    _Point(matrix.transformX(run.width, 1), matrix.transformY(run.width, 1)),
-    _Point(matrix.transformX(0, 1), matrix.transformY(0, 1)),
+    Point(matrix.transformX(run.width, 1), matrix.transformY(run.width, 1)),
+    Point(matrix.transformX(0, 1), matrix.transformY(0, 1)),
   ]);
 }
 
-PdfDisplayRect? _imageRequestBounds(PdfImageRequest request) => _pointsBounds([
-  _Point(
-    request.transform.transformX(0, 0),
-    request.transform.transformY(0, 0),
-  ),
-  _Point(
-    request.transform.transformX(1, 0),
-    request.transform.transformY(1, 0),
-  ),
-  _Point(
-    request.transform.transformX(1, 1),
-    request.transform.transformY(1, 1),
-  ),
-  _Point(
-    request.transform.transformX(0, 1),
-    request.transform.transformY(0, 1),
-  ),
+PdfDisplayRect? imageRequestBounds(PdfImageRequest request) => pointsBounds([
+  Point(request.transform.transformX(0, 0), request.transform.transformY(0, 0)),
+  Point(request.transform.transformX(1, 0), request.transform.transformY(1, 0)),
+  Point(request.transform.transformX(1, 1), request.transform.transformY(1, 1)),
+  Point(request.transform.transformX(0, 1), request.transform.transformY(0, 1)),
 ]);
 
-PdfDisplayRect? _meshBounds(PdfMesh mesh) => _pointsBounds([
-  for (final vertex in mesh.vertices) _Point(vertex.x, vertex.y),
+PdfDisplayRect? meshBounds(PdfMesh mesh) => pointsBounds([
+  for (final vertex in mesh.vertices) Point(vertex.x, vertex.y),
 ]);
 
-PdfDisplayRect? _pointsBounds(List<_Point> points) {
+PdfDisplayRect? pointsBounds(List<Point> points) {
   if (points.isEmpty) return null;
   var left = double.infinity;
   var top = double.infinity;
@@ -201,7 +222,7 @@ PdfDisplayRect? _pointsBounds(List<_Point> points) {
   return PdfDisplayRect(left, top, right, bottom);
 }
 
-_IntRect? _rawBoundsOf(List<List<_Point>> contours) {
+IntRect? rawBoundsOf(List<List<Point>> contours) {
   if (contours.isEmpty) return null;
   var left = double.infinity;
   var top = double.infinity;
@@ -215,7 +236,7 @@ _IntRect? _rawBoundsOf(List<List<_Point>> contours) {
       bottom = math.max(bottom, point.y);
     }
   }
-  return _IntRect(left.floor(), top.floor(), right.ceil(), bottom.ceil());
+  return IntRect(left.floor(), top.floor(), right.ceil(), bottom.ceil());
 }
 
 /// The visible size of a PDF page after page rotation is applied.

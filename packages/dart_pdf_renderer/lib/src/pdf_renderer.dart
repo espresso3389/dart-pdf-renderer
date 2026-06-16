@@ -1,3 +1,5 @@
+// ignore_for_file: unused_import
+
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -19,30 +21,30 @@ import 'package:pdf_graphics/pdf_graphics.dart'
         PdfRestoreCommand,
         PdfSaveCommand,
         PdfSetBlendModeCommand,
-        PdfStrokePathCommand;
+        PdfStrokePathCommand,
+        RecordingPdfDevice;
 import 'pdf_display_command.dart';
 import 'pdfium_cmyk.dart';
 
-part 'pdf_renderer_display_list.dart';
-part 'pdf_renderer_recording_device.dart';
-part 'pdf_renderer_glyph.dart';
-part 'pdf_renderer_graphics.dart';
-part 'pdf_renderer_models.dart';
-part 'pdf_renderer_direct_device.dart';
-part 'pdf_renderer_image.dart';
-part 'pdf_renderer_geometry.dart';
+import 'pdf_renderer_display_list.dart';
+import 'pdf_renderer_recording_device.dart';
+import 'pdf_renderer_glyph.dart';
+import 'pdf_renderer_graphics.dart';
+import 'pdf_renderer_models.dart';
+import 'pdf_renderer_direct_device.dart';
+import 'pdf_renderer_image.dart';
+import 'pdf_renderer_geometry.dart';
 
-const _antiAliasSamplesPerAxis = 4;
-const _antiAliasSampleCount =
-    _antiAliasSamplesPerAxis * _antiAliasSamplesPerAxis;
-const _antiAliasSampleScale = 1 / _antiAliasSampleCount;
-const _minCubicFlattenSegments = 8;
-const _midCubicFlattenSegments = 12;
-const _maxCubicFlattenSegments = 16;
-const _glyphTransformQuantization = 64;
-const _glyphSubpixelQuantization = 1;
-const _defaultMaxGlyphRasterPixels = 65536;
-const _defaultMaxGlyphRasterCacheEntries = 2048;
+const antiAliasSamplesPerAxis = 4;
+const antiAliasSampleCount = antiAliasSamplesPerAxis * antiAliasSamplesPerAxis;
+const antiAliasSampleScale = 1 / antiAliasSampleCount;
+const minCubicFlattenSegments = 8;
+const midCubicFlattenSegments = 12;
+const maxCubicFlattenSegments = 16;
+const glyphTransformQuantization = 64;
+const glyphSubpixelQuantization = 1;
+const defaultMaxGlyphRasterPixels = 65536;
+const defaultMaxGlyphRasterCacheEntries = 2048;
 
 /// A synchronous renderer for PDF pages backed by the pure Dart renderer.
 class PdfPageRenderer {
@@ -59,25 +61,25 @@ class PdfPageRenderer {
 
   /// The PDF document rendered by this instance.
   final PdfDocument document;
-  final _displayLists = <_PdfPageDisplayListKey, _PdfPageDisplayList>{};
+  final displayLists = <PdfPageDisplayListKey, PdfPageDisplayList>{};
 
   /// The glyph raster cache used while rendering text.
   final PdfGlyphRasterCache glyphRasterCache;
 
   /// The image decode cache used while rendering image XObjects.
   final PdfImageDecodeCache imageDecodeCache;
-  late final _ImageColorContext _documentImageColorContext =
-      _ImageColorContext.fromDocument(document.cos);
+  late final ImageColorContext documentImageColorContext =
+      ImageColorContext.fromDocument(document.cos);
 
   /// The current number of cached page display lists.
   ///
   /// Each page can have separate entries for annotation and non-annotation
   /// rendering.
-  int get displayListCacheEntryCount => _displayLists.length;
+  int get displayListCacheEntryCount => displayLists.length;
 
   /// The page sizes in display coordinate order.
   List<PdfPageSize> get pageSizes => List.unmodifiable([
-    for (var i = 0; i < document.pageCount; i++) _pageSize(document.page(i)),
+    for (var i = 0; i < document.pageCount; i++) pageSize(document.page(i)),
   ]);
 
   /// Removes cached display lists.
@@ -93,13 +95,13 @@ class PdfPageRenderer {
   /// their old positions.
   void clearDisplayListCache({int? pageNumber, bool? annotations}) {
     if (pageNumber == null && annotations == null) {
-      _displayLists.clear();
+      displayLists.clear();
       return;
     }
     final pageKey = pageNumber == null
         ? null
-        : _pageCacheKeyForPageNumber(pageNumber);
-    _displayLists.removeWhere(
+        : pageCacheKeyForPageNumber(pageNumber);
+    displayLists.removeWhere(
       (key, _) =>
           (pageKey == null || key.page == pageKey) &&
           (annotations == null || key.annotations == annotations),
@@ -138,7 +140,7 @@ class PdfPageRenderer {
       timing: timing,
     );
     final stopwatch = timing == null ? null : (Stopwatch()..start());
-    final bgra = _rgbaToBgra(rgba, width: width, height: height);
+    final bgra = rgbaToBgra(rgba, width: width, height: height);
     if (stopwatch != null) {
       stopwatch.stop();
       timing!.bgraConversionMicroseconds = stopwatch.elapsedMicroseconds;
@@ -161,8 +163,8 @@ class PdfPageRenderer {
   }) {
     timing?.reset();
     final page = document.page(pageNumber - 1);
-    return _renderRgbaDisplayList(
-      _displayListFor(pageNumber, page, annotations, timing: timing),
+    return renderRgbaDisplayList(
+      displayListFor(pageNumber, page, annotations, timing: timing),
       cosDocument: page.document.cos,
       x: x,
       y: y,
@@ -177,48 +179,48 @@ class PdfPageRenderer {
     );
   }
 
-  _PdfPageDisplayList _displayListFor(
+  PdfPageDisplayList displayListFor(
     int pageNumber,
     PdfPage page,
     bool annotations, {
     PdfRenderTiming? timing,
   }) {
-    final key = _PdfPageDisplayListKey(
-      _pageCacheKeyForPage(page),
+    final key = PdfPageDisplayListKey(
+      pageCacheKeyForPage(page),
       annotations: annotations,
     );
-    final cached = _displayLists[key];
+    final cached = displayLists[key];
     if (cached != null) {
       timing?.displayListCacheHit = true;
       return cached;
     }
     timing?.displayListCacheHit = false;
     final stopwatch = timing == null ? null : (Stopwatch()..start());
-    final displayList = _buildDisplayList(
+    final displayList = buildDisplayList(
       page,
       annotations: annotations,
-      documentImageColorContext: _documentImageColorContext,
+      documentImageColorContext: documentImageColorContext,
     );
     if (stopwatch != null) {
       stopwatch.stop();
       timing!.displayListBuildMicroseconds = stopwatch.elapsedMicroseconds;
     }
-    _displayLists[key] = displayList;
+    displayLists[key] = displayList;
     return displayList;
   }
 
-  _PdfPageCacheKey _pageCacheKeyForPageNumber(int pageNumber) {
+  PdfPageCacheKey pageCacheKeyForPageNumber(int pageNumber) {
     if (pageNumber < 1 || pageNumber > document.pageCount) {
       throw RangeError.range(pageNumber, 1, document.pageCount, 'pageNumber');
     }
-    return _pageCacheKeyForPage(document.page(pageNumber - 1));
+    return pageCacheKeyForPage(document.page(pageNumber - 1));
   }
 
-  _PdfPageCacheKey _pageCacheKeyForPage(PdfPage page) {
-    return _PdfPageCacheKey(document.cos.referenceTo(page.dict), page.dict);
+  PdfPageCacheKey pageCacheKeyForPage(PdfPage page) {
+    return PdfPageCacheKey(document.cos.referenceTo(page.dict), page.dict);
   }
 
-  static PdfPageSize _pageSize(PdfPage page) {
+  static PdfPageSize pageSize(PdfPage page) {
     final box = page.cropBox;
     final swap = page.rotation == 90 || page.rotation == 270;
     return swap
@@ -226,29 +228,29 @@ class PdfPageRenderer {
         : PdfPageSize(box.width, box.height);
   }
 
-  static _PdfPageDisplayList _buildDisplayList(
+  static PdfPageDisplayList buildDisplayList(
     PdfPage page, {
     required bool annotations,
-    required _ImageColorContext documentImageColorContext,
+    required ImageColorContext documentImageColorContext,
   }) {
-    final imageColorContexts = _collectImageColorContexts(
+    final imageColorContexts = collectImageColorContexts(
       page,
       annotations: annotations,
       documentImageColorContext: documentImageColorContext,
     );
-    final device = _RecordingPdfDevice(
-      transform: _pageToViewMatrix(page),
+    final device = RecordingPdfDevice(
+      transform: pageToViewMatrix(page),
       imageColorContexts: imageColorContexts,
       documentImageColorContext: documentImageColorContext,
     );
     final interpreter = PdfInterpreter(cos: page.document.cos, device: device)
       ..drawPage(page);
     if (annotations) interpreter.drawAnnotations(page);
-    return _PdfPageDisplayList(List.unmodifiable(device.commands));
+    return PdfPageDisplayList(List.unmodifiable(device.commands));
   }
 
-  static Uint8List _renderRgbaDisplayList(
-    _PdfPageDisplayList displayList, {
+  static Uint8List renderRgbaDisplayList(
+    PdfPageDisplayList displayList, {
     required cos.CosDocument cosDocument,
     required double x,
     required double y,
@@ -262,7 +264,7 @@ class PdfPageRenderer {
     PdfRenderTiming? timing,
   }) {
     final clearStopwatch = timing == null ? null : (Stopwatch()..start());
-    final surface = _RgbaSurface(width, height)
+    final surface = RgbaSurface(width, height)
       ..clear(
         (backgroundColor >> 16) & 0xff,
         (backgroundColor >> 8) & 0xff,
@@ -281,7 +283,7 @@ class PdfPageRenderer {
     ).concat(PdfMatrix.scaled(pixelRatio, pixelRatio));
     final replayStopwatch = timing == null ? null : (Stopwatch()..start());
     displayList.replay(
-      PdfDirectPdfDevice._(
+      PdfDirectPdfDevice.internal(
         surface,
         cosDocument: cosDocument,
         transform: transform,
@@ -304,7 +306,7 @@ class PdfPageRenderer {
     return surface.pixels;
   }
 
-  static PdfMatrix _pageToViewMatrix(PdfPage page) {
+  static PdfMatrix pageToViewMatrix(PdfPage page) {
     final box = page.cropBox;
     final unrotated = PdfMatrix.translation(-box.left, -box.bottom)
         .concat(const PdfMatrix.scaled(1, -1))
